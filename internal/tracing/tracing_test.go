@@ -604,6 +604,259 @@ func TestNewTracingFromEnv_HeaderAttributeMapping(t *testing.T) {
 	require.Equal(t, "user456", attrs["user.id"])
 }
 
+// TestMetadataHeaderParsing verifies that the x-ai-pypestream-metadata header
+// is properly parsed as JSON and flattened into span attributes.
+func TestMetadataHeaderParsing(t *testing.T) {
+	tests := []struct {
+		name           string
+		metadataValue  string
+		expectedAttrs  map[string]string
+		checkAttrCount bool
+	}{
+		{
+			name:          "valid JSON with flat structure",
+			metadataValue: `{"user_id":"abc123","session":"xyz789"}`,
+			expectedAttrs: map[string]string{
+				"metadata.user_id": "abc123",
+				"metadata.session": "xyz789",
+			},
+		},
+		{
+			name:          "valid JSON with nested structure",
+			metadataValue: `{"user":{"id":"u123","name":"John"},"env":"prod"}`,
+			expectedAttrs: map[string]string{
+				"metadata.user.id":   "u123",
+				"metadata.user.name": "John",
+				"metadata.env":       "prod",
+			},
+		},
+		{
+			name:          "valid JSON with array",
+			metadataValue: `{"tags":["a","b"],"count":42}`,
+			expectedAttrs: map[string]string{
+				"metadata.tags.0": "a",
+				"metadata.tags.1": "b",
+				"metadata.count":  "42",
+			},
+		},
+		{
+			name:          "valid JSON with boolean and null",
+			metadataValue: `{"active":true,"disabled":false,"extra":null}`,
+			expectedAttrs: map[string]string{
+				"metadata.active":   "true",
+				"metadata.disabled": "false",
+				"metadata.extra":    "",
+			},
+		},
+		{
+			name:          "single null field",
+			metadataValue: `{"someValue": null}`,
+			expectedAttrs: map[string]string{
+				"metadata.someValue": "",
+			},
+		},
+		{
+			name:          "invalid JSON falls back to raw string",
+			metadataValue: `not valid json`,
+			expectedAttrs: map[string]string{
+				"metadata.raw": "not valid json",
+			},
+			checkAttrCount: true,
+		},
+		{
+			name:          "empty JSON object",
+			metadataValue: `{}`,
+			expectedAttrs: map[string]string{},
+		},
+		// Complex test cases
+		{
+			name:          "deeply nested JSON (4 levels)",
+			metadataValue: `{"level1":{"level2":{"level3":{"level4":"deep_value"}}}}`,
+			expectedAttrs: map[string]string{
+				"metadata.level1.level2.level3.level4": "deep_value",
+			},
+		},
+		{
+			name:          "array of objects",
+			metadataValue: `{"users":[{"id":"u1","name":"Alice"},{"id":"u2","name":"Bob"}]}`,
+			expectedAttrs: map[string]string{
+				"metadata.users.0.id":   "u1",
+				"metadata.users.0.name": "Alice",
+				"metadata.users.1.id":   "u2",
+				"metadata.users.1.name": "Bob",
+			},
+		},
+		{
+			name:          "mixed nested arrays and objects",
+			metadataValue: `{"config":{"features":["auth","logging"],"settings":{"timeout":30,"retries":3}}}`,
+			expectedAttrs: map[string]string{
+				"metadata.config.features.0":        "auth",
+				"metadata.config.features.1":        "logging",
+				"metadata.config.settings.timeout":  "30",
+				"metadata.config.settings.retries":  "3",
+			},
+		},
+		{
+			name:          "real-world metadata scenario",
+			metadataValue: `{"conversation_id":"conv-abc123","user":{"id":"usr-456","org":"acme","roles":["admin","user"]},"context":{"channel":"web","locale":"en-US"},"trace_id":"trace-xyz"}`,
+			expectedAttrs: map[string]string{
+				"metadata.conversation_id":  "conv-abc123",
+				"metadata.user.id":          "usr-456",
+				"metadata.user.org":         "acme",
+				"metadata.user.roles.0":     "admin",
+				"metadata.user.roles.1":     "user",
+				"metadata.context.channel":  "web",
+				"metadata.context.locale":   "en-US",
+				"metadata.trace_id":         "trace-xyz",
+			},
+		},
+		{
+			name:          "numeric types: integers and floats",
+			metadataValue: `{"count":42,"price":19.99,"negative":-5,"zero":0,"large":9999999999}`,
+			expectedAttrs: map[string]string{
+				"metadata.count":    "42",
+				"metadata.price":    "19.99",
+				"metadata.negative": "-5",
+				"metadata.zero":     "0",
+				"metadata.large":    "9.999999999e+09",
+			},
+		},
+		{
+			name:          "empty string and whitespace values",
+			metadataValue: `{"empty":"","whitespace":"  ","normal":"value"}`,
+			expectedAttrs: map[string]string{
+				"metadata.empty":      "",
+				"metadata.whitespace": "  ",
+				"metadata.normal":     "value",
+			},
+		},
+		{
+			name:          "unicode and special characters",
+			metadataValue: `{"emoji":"🚀","chinese":"你好","accent":"café","special":"a/b\\c\"d"}`,
+			expectedAttrs: map[string]string{
+				"metadata.emoji":   "🚀",
+				"metadata.chinese": "你好",
+				"metadata.accent":  "café",
+				"metadata.special": "a/b\\c\"d",
+			},
+		},
+		{
+			name:          "nested empty arrays and objects",
+			metadataValue: `{"empty_arr":[],"empty_obj":{},"arr_with_empty":[{}],"nested":{"empty":[]}}`,
+			expectedAttrs: map[string]string{
+				// Empty arrays and objects produce no attributes
+			},
+		},
+		{
+			name:          "array at root level treated as invalid (not object)",
+			metadataValue: `["item1","item2"]`,
+			expectedAttrs: map[string]string{
+				"metadata.raw": `["item1","item2"]`,
+			},
+			checkAttrCount: true,
+		},
+		{
+			name:          "complex nested with mixed null and values",
+			metadataValue: `{"request":{"id":"req-001","payload":{"data":null,"metadata":{"source":"api","version":"1.0"}}},"response":null}`,
+			expectedAttrs: map[string]string{
+				"metadata.request.id":                       "req-001",
+				"metadata.request.payload.data":             "",
+				"metadata.request.payload.metadata.source":  "api",
+				"metadata.request.payload.metadata.version": "1.0",
+				"metadata.response":                         "",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := testotel.StartOTLPCollector()
+			t.Cleanup(collector.Close)
+			clearEnv(t)
+			collector.SetEnv(t.Setenv)
+
+			result, err := NewTracingFromEnv(t.Context(), io.Discard, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = result.Shutdown(context.Background()) })
+
+			headers := map[string]string{
+				"x-ai-pypestream-metadata": tt.metadataValue,
+			}
+			carrier := propagation.MapCarrier{}
+
+			tr := result.ChatCompletionTracer()
+			req := &openai.ChatCompletionRequest{Model: openai.ModelGPT5Nano}
+			span := tr.StartSpanAndInjectHeaders(t.Context(), headers, carrier, req, []byte("{}"))
+			require.NotNil(t, span)
+			span.EndSpan()
+
+			v1Span := collector.TakeSpan()
+			require.NotNil(t, v1Span)
+
+			attrs := make(map[string]string)
+			for _, kv := range v1Span.Attributes {
+				attrs[kv.Key] = kv.Value.GetStringValue()
+			}
+
+			for expectedKey, expectedValue := range tt.expectedAttrs {
+				require.Equal(t, expectedValue, attrs[expectedKey], "attribute %s mismatch", expectedKey)
+			}
+
+			// For invalid JSON, ensure only the raw attribute is set (no other metadata.* attrs).
+			if tt.checkAttrCount {
+				metadataCount := 0
+				for key := range attrs {
+					if len(key) >= 9 && key[:9] == "metadata." {
+						metadataCount++
+					}
+				}
+				require.Equal(t, 1, metadataCount, "invalid JSON should only produce metadata.raw")
+			}
+		})
+	}
+}
+
+// TestMetadataHeaderParsing_CustomHeader verifies the header name can be overridden via env.
+func TestMetadataHeaderParsing_CustomHeader(t *testing.T) {
+	t.Setenv(EnvMetadataHeaderName, "x-custom-metadata")
+	original := metadataHeaderName
+	metadataHeaderName = resolveMetadataHeaderName()
+	t.Cleanup(func() {
+		metadataHeaderName = original
+	})
+
+	collector := testotel.StartOTLPCollector()
+	t.Cleanup(collector.Close)
+	clearEnv(t)
+	collector.SetEnv(t.Setenv)
+
+	result, err := NewTracingFromEnv(t.Context(), io.Discard, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = result.Shutdown(context.Background()) })
+
+	headers := map[string]string{
+		"x-custom-metadata": `{"foo":"bar","deep":{"x":1}}`,
+	}
+	carrier := propagation.MapCarrier{}
+
+	tr := result.ChatCompletionTracer()
+	req := &openai.ChatCompletionRequest{Model: openai.ModelGPT5Nano}
+	span := tr.StartSpanAndInjectHeaders(t.Context(), headers, carrier, req, []byte("{}"))
+	require.NotNil(t, span)
+	span.EndSpan()
+
+	v1Span := collector.TakeSpan()
+	require.NotNil(t, v1Span)
+
+	attrs := make(map[string]string)
+	for _, kv := range v1Span.Attributes {
+		attrs[kv.Key] = kv.Value.GetStringValue()
+	}
+
+	require.Equal(t, "bar", attrs["metadata.foo"])
+	require.Equal(t, "1", attrs["metadata.deep.x"])
+}
+
 // TestNewTracingFromEnv_Embeddings_Redaction tests that the OpenInference
 // environment variables (OPENINFERENCE_HIDE_EMBEDDINGS_TEXT and OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS)
 // work correctly to redact sensitive data from embeddings spans, following the OpenInference
