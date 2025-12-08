@@ -7,6 +7,10 @@ package tracing
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -17,6 +21,87 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	tracing "github.com/envoyproxy/ai-gateway/internal/tracing/api"
 )
+
+const (
+	// EnvMetadataHeaderName controls which header carries JSON metadata.
+	EnvMetadataHeaderName = "AIGW_METADATA_HEADER_NAME"
+
+	// defaultMetadataHeaderName is the header that contains JSON metadata to be parsed
+	// and added as flattened span attributes with the "metadata." prefix.
+	defaultMetadataHeaderName = "x-ai-metadata"
+	// metadataAttrPrefix is the prefix used for all metadata span attributes.
+	metadataAttrPrefix = "metadata."
+)
+
+var (
+	// metadataHeaderName holds the effective header name to parse, derived from
+	// the environment variable once at init.
+	metadataHeaderName = resolveMetadataHeaderName()
+)
+
+// resolveMetadataHeaderName derives the metadata header name from env with a fallback.
+func resolveMetadataHeaderName() string {
+	if v := strings.TrimSpace(os.Getenv(EnvMetadataHeaderName)); v != "" {
+		return strings.ToLower(v)
+	}
+	return defaultMetadataHeaderName
+}
+
+// flattenJSON recursively flattens a nested JSON structure into dot-notation keys.
+// For example, {"a": {"b": "c"}} becomes {"a.b": "c"}.
+// Arrays are handled by using numeric indices: {"arr": [1,2]} becomes {"arr.0": "1", "arr.1": "2"}.
+func flattenJSON(prefix string, data any, result map[string]string) {
+	switch v := data.(type) {
+	case map[string]any:
+		for key, value := range v {
+			newKey := key
+			if prefix != "" {
+				newKey = prefix + "." + key
+			}
+			flattenJSON(newKey, value, result)
+		}
+	case []any:
+		for i, value := range v {
+			newKey := fmt.Sprintf("%s.%d", prefix, i)
+			if prefix == "" {
+				newKey = fmt.Sprintf("%d", i)
+			}
+			flattenJSON(newKey, value, result)
+		}
+	case string:
+		result[prefix] = v
+	case float64:
+		result[prefix] = fmt.Sprintf("%v", v)
+	case bool:
+		result[prefix] = fmt.Sprintf("%v", v)
+	case nil:
+		result[prefix] = ""
+	default:
+		result[prefix] = fmt.Sprintf("%v", v)
+	}
+}
+
+// parseMetadataHeader attempts to parse the metadata header value as JSON and
+// returns flattened span attributes. If parsing fails, it falls back to storing
+// the raw string value under "metadata.raw".
+func parseMetadataHeader(headerValue string) []attribute.KeyValue {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(headerValue), &parsed); err != nil {
+		// Fallback: store raw string if JSON parsing fails.
+		return []attribute.KeyValue{
+			attribute.String(metadataAttrPrefix+"raw", headerValue),
+		}
+	}
+
+	flattened := make(map[string]string)
+	flattenJSON("", parsed, flattened)
+
+	attrs := make([]attribute.KeyValue, 0, len(flattened))
+	for key, value := range flattened {
+		attrs = append(attrs, attribute.String(metadataAttrPrefix+key, value))
+	}
+	return attrs
+}
 
 // spanFactory is a function type that creates a new SpanT given a trace.Span and a Recorder.
 type spanFactory[ReqT any, RespT any, RespChunkT any] func(trace.Span, tracing.SpanRecorder[ReqT, RespT, RespChunkT]) tracing.Span[RespT, RespChunkT]
@@ -96,6 +181,14 @@ func (t *requestTracerImpl[ReqT, RespT, ChunkT]) StartSpanAndInjectHeaders(
 		}
 		if len(attrs) > 0 {
 			span.SetAttributes(attrs...)
+		}
+	}
+
+	// Process the metadata header specially: parse JSON and flatten into span attributes.
+	if metadataValue, ok := headers[metadataHeaderName]; ok {
+		metadataAttrs := parseMetadataHeader(metadataValue)
+		if len(metadataAttrs) > 0 {
+			span.SetAttributes(metadataAttrs...)
 		}
 	}
 
