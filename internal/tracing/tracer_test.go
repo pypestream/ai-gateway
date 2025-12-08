@@ -275,6 +275,80 @@ func TestRequestTracer_HeaderAttributeMapping(t *testing.T) {
 	})
 }
 
+func TestRequestTracer_MetadataHeader_DefaultPrefix(t *testing.T) {
+	t.Setenv("AIGW_METADATA_ATTR_PREFIX", "")
+	prevPrefix := metadataAttrPrefix
+	metadataAttrPrefix = resolveMetadataAttrPrefix()
+	t.Cleanup(func() { metadataAttrPrefix = prevPrefix })
+
+	reqBody, err := json.Marshal(req)
+	require.NoError(t, err)
+	spanName := fmt.Sprintf("non-stream len: %d", len(reqBody))
+
+	headers := map[string]string{
+		"x-ai-metadata": `{"user":{"id":"123"},"tenant":"abc"}`,
+	}
+
+	runRequestTracerLifecycleTest(t, requestTracerLifecycleTest[openai.ChatCompletionRequest, openai.ChatCompletionResponse, openai.ChatCompletionResponseChunk]{
+		constructor:      chatCompletionTracerCtor,
+		req:              req,
+		headers:          headers,
+		reqBody:          reqBody,
+		expectedSpanName: spanName,
+		expectedSpanType: (*chatCompletionSpan)(nil),
+		recordAndEnd: func(span tracing.ChatCompletionSpan) {
+			span.EndSpan()
+		},
+		assertAttrs: func(t *testing.T, attrs []attribute.KeyValue) {
+			attrMap := make(map[attribute.Key]attribute.Value, len(attrs))
+			for _, attr := range attrs {
+				attrMap[attr.Key] = attr.Value
+			}
+			require.Equal(t, "stream: false", attrMap["req"].AsString())
+			require.Equal(t, len(reqBody), int(attrMap["reqBodyLen"].AsInt64()))
+			require.Equal(t, "123", attrMap["metadata.user.id"].AsString())
+			require.Equal(t, "abc", attrMap["metadata.tenant"].AsString())
+		},
+	})
+}
+
+func TestRequestTracer_MetadataHeader_CustomPrefix(t *testing.T) {
+	t.Setenv("AIGW_METADATA_ATTR_PREFIX", "custom-prefix")
+	prevPrefix := metadataAttrPrefix
+	metadataAttrPrefix = resolveMetadataAttrPrefix()
+	t.Cleanup(func() { metadataAttrPrefix = prevPrefix })
+
+	reqBody, err := json.Marshal(req)
+	require.NoError(t, err)
+	spanName := fmt.Sprintf("non-stream len: %d", len(reqBody))
+
+	headers := map[string]string{
+		"x-ai-metadata": `{"user":{"id":"123"},"tenant":"abc"}`,
+	}
+
+	runRequestTracerLifecycleTest(t, requestTracerLifecycleTest[openai.ChatCompletionRequest, openai.ChatCompletionResponse, openai.ChatCompletionResponseChunk]{
+		constructor:      chatCompletionTracerCtor,
+		req:              req,
+		headers:          headers,
+		reqBody:          reqBody,
+		expectedSpanName: spanName,
+		expectedSpanType: (*chatCompletionSpan)(nil),
+		recordAndEnd: func(span tracing.ChatCompletionSpan) {
+			span.EndSpan()
+		},
+		assertAttrs: func(t *testing.T, attrs []attribute.KeyValue) {
+			attrMap := make(map[attribute.Key]attribute.Value, len(attrs))
+			for _, attr := range attrs {
+				attrMap[attr.Key] = attr.Value
+			}
+			require.Equal(t, "stream: false", attrMap["req"].AsString())
+			require.Equal(t, len(reqBody), int(attrMap["reqBodyLen"].AsInt64()))
+			require.Equal(t, "123", attrMap["custom-prefix.user.id"].AsString())
+			require.Equal(t, "abc", attrMap["custom-prefix.tenant"].AsString())
+		},
+	})
+}
+
 func TestNewCompletionTracer_BuildsGenericRequestTracer(t *testing.T) {
 	tp := trace.NewTracerProvider()
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
