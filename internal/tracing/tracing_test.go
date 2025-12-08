@@ -607,6 +607,12 @@ func TestNewTracingFromEnv_HeaderAttributeMapping(t *testing.T) {
 // TestMetadataHeaderParsing verifies that the x-ai-pypestream-metadata header
 // is properly parsed as JSON and flattened into span attributes.
 func TestMetadataHeaderParsing(t *testing.T) {
+	// Use a custom metadata header for this suite to exercise env override.
+	t.Setenv("AIGW_METADATA_HEADER_NAME", "x-ai-pypestream-metadata")
+	prevHeader := metadataHeaderName
+	metadataHeaderName = resolveMetadataHeaderName()
+	t.Cleanup(func() { metadataHeaderName = prevHeader })
+
 	tests := []struct {
 		name           string
 		metadataValue  string
@@ -628,6 +634,14 @@ func TestMetadataHeaderParsing(t *testing.T) {
 				"metadata.user.id":   "u123",
 				"metadata.user.name": "John",
 				"metadata.env":       "prod",
+			},
+		},
+		{
+			name:          "key containing dots is preserved",
+			metadataValue: `{"session.id":"xyz","user.name":"alice"}`,
+			expectedAttrs: map[string]string{
+				"metadata.session.id": "xyz",
+				"metadata.user.name":  "alice",
 			},
 		},
 		{
@@ -818,7 +832,7 @@ func TestMetadataHeaderParsing(t *testing.T) {
 
 // TestMetadataHeaderParsing_CustomHeader verifies the header name can be overridden via env.
 func TestMetadataHeaderParsing_CustomHeader(t *testing.T) {
-	t.Setenv(EnvMetadataHeaderName, "x-custom-metadata")
+	t.Setenv("AIGW_METADATA_HEADER_NAME", "x-custom-metadata")
 	original := metadataHeaderName
 	metadataHeaderName = resolveMetadataHeaderName()
 	t.Cleanup(func() {

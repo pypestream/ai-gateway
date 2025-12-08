@@ -23,28 +23,39 @@ import (
 )
 
 const (
-	// EnvMetadataHeaderName controls which header carries JSON metadata.
-	EnvMetadataHeaderName = "AIGW_METADATA_HEADER_NAME"
-
 	// defaultMetadataHeaderName is the header that contains JSON metadata to be parsed
 	// and added as flattened span attributes with the "metadata." prefix.
 	defaultMetadataHeaderName = "x-ai-metadata"
-	// metadataAttrPrefix is the prefix used for all metadata span attributes.
-	metadataAttrPrefix = "metadata."
+	// defaultMetadataAttrPrefix is the prefix used for all metadata span attributes.
+	defaultMetadataAttrPrefix = "metadata."
 )
 
 var (
 	// metadataHeaderName holds the effective header name to parse, derived from
 	// the environment variable once at init.
 	metadataHeaderName = resolveMetadataHeaderName()
+	// metadataAttrPrefix holds the effective attribute prefix for metadata attributes.
+	metadataAttrPrefix = resolveMetadataAttrPrefix()
 )
 
 // resolveMetadataHeaderName derives the metadata header name from env with a fallback.
 func resolveMetadataHeaderName() string {
-	if v := strings.TrimSpace(os.Getenv(EnvMetadataHeaderName)); v != "" {
+	if v := strings.TrimSpace(os.Getenv("AIGW_METADATA_HEADER_NAME")); v != "" {
 		return strings.ToLower(v)
 	}
 	return defaultMetadataHeaderName
+}
+
+// resolveMetadataAttrPrefix derives the metadata attribute prefix from env with a fallback.
+// Ensures the prefix always ends with a dot for consistent attribute keys.
+func resolveMetadataAttrPrefix() string {
+	if v := strings.TrimSpace(os.Getenv("AIGW_METADATA_ATTR_PREFIX")); v != "" {
+		if strings.HasSuffix(v, ".") {
+			return v
+		}
+		return v + "."
+	}
+	return defaultMetadataAttrPrefix
 }
 
 // flattenJSON recursively flattens a nested JSON structure into dot-notation keys.
