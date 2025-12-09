@@ -23,6 +23,8 @@ import (
 )
 
 const (
+	// defaultSpanNameHeaderName is the header that overrides the span name when provided.
+	defaultSpanNameHeaderName = "x-ai-span-name"
 	// defaultMetadataHeaderName is the header that contains JSON metadata to be parsed
 	// and added as flattened span attributes with the "metadata." prefix.
 	defaultMetadataHeaderName = "x-ai-metadata"
@@ -31,12 +33,22 @@ const (
 )
 
 var (
+	// spanNameHeaderName holds the header name to override span names, derived from env once at init.
+	spanNameHeaderName = resolveSpanNameHeaderName()
 	// metadataHeaderName holds the effective header name to parse, derived from
 	// the environment variable once at init.
 	metadataHeaderName = resolveMetadataHeaderName()
 	// metadataAttrPrefix holds the effective attribute prefix for metadata attributes.
 	metadataAttrPrefix = resolveMetadataAttrPrefix()
 )
+
+// resolveSpanNameHeaderName derives the span name override header from env with a fallback.
+func resolveSpanNameHeaderName() string {
+	if v := strings.TrimSpace(os.Getenv("AIGW_SPAN_NAME_HEADER_NAME")); v != "" {
+		return strings.ToLower(v)
+	}
+	return defaultSpanNameHeaderName
+}
 
 // resolveMetadataHeaderName derives the metadata header name from env with a fallback.
 func resolveMetadataHeaderName() string {
@@ -172,6 +184,11 @@ func (t *requestTracerImpl[ReqT, RespT, ChunkT]) StartSpanAndInjectHeaders(
 ) tracing.Span[RespT, ChunkT] {
 	parentCtx := t.propagator.Extract(ctx, propagation.MapCarrier(headers))
 	spanName, opts := t.recorder.StartParams(req, body)
+	if override, ok := headers[spanNameHeaderName]; ok {
+		if name := strings.TrimSpace(override); name != "" {
+			spanName = name
+		}
+	}
 	newCtx, span := t.tracer.Start(parentCtx, spanName, opts...)
 
 	t.propagator.Inject(newCtx, carrier)
