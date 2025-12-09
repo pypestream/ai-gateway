@@ -275,6 +275,69 @@ func TestRequestTracer_HeaderAttributeMapping(t *testing.T) {
 	})
 }
 
+func TestRequestTracer_SpanNameHeader_Default(t *testing.T) {
+	reqBody, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	headers := map[string]string{
+		defaultSpanNameHeaderName: "custom-span",
+	}
+
+	runRequestTracerLifecycleTest(t, requestTracerLifecycleTest[openai.ChatCompletionRequest, openai.ChatCompletionResponse, openai.ChatCompletionResponseChunk]{
+		constructor:      chatCompletionTracerCtor,
+		req:              req,
+		headers:          headers,
+		reqBody:          reqBody,
+		expectedSpanName: "custom-span",
+		expectedSpanType: (*chatCompletionSpan)(nil),
+		recordAndEnd: func(span tracing.ChatCompletionSpan) {
+			span.EndSpan()
+		},
+		assertAttrs: func(t *testing.T, attrs []attribute.KeyValue) {
+			attrMap := make(map[attribute.Key]attribute.Value, len(attrs))
+			for _, attr := range attrs {
+				attrMap[attr.Key] = attr.Value
+			}
+			require.Equal(t, "stream: false", attrMap["req"].AsString())
+			require.Equal(t, len(reqBody), int(attrMap["reqBodyLen"].AsInt64()))
+		},
+	})
+}
+
+func TestRequestTracer_SpanNameHeader_CustomEnv(t *testing.T) {
+	t.Setenv("AIGW_SPAN_NAME_HEADER_NAME", "X-Custom-Span-Name")
+	prevHeader := spanNameHeaderName
+	spanNameHeaderName = resolveSpanNameHeaderName()
+	t.Cleanup(func() { spanNameHeaderName = prevHeader })
+
+	reqBody, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	headers := map[string]string{
+		spanNameHeaderName: "env-configured-span",
+	}
+
+	runRequestTracerLifecycleTest(t, requestTracerLifecycleTest[openai.ChatCompletionRequest, openai.ChatCompletionResponse, openai.ChatCompletionResponseChunk]{
+		constructor:      chatCompletionTracerCtor,
+		req:              req,
+		headers:          headers,
+		reqBody:          reqBody,
+		expectedSpanName: "env-configured-span",
+		expectedSpanType: (*chatCompletionSpan)(nil),
+		recordAndEnd: func(span tracing.ChatCompletionSpan) {
+			span.EndSpan()
+		},
+		assertAttrs: func(t *testing.T, attrs []attribute.KeyValue) {
+			attrMap := make(map[attribute.Key]attribute.Value, len(attrs))
+			for _, attr := range attrs {
+				attrMap[attr.Key] = attr.Value
+			}
+			require.Equal(t, "stream: false", attrMap["req"].AsString())
+			require.Equal(t, len(reqBody), int(attrMap["reqBodyLen"].AsInt64()))
+		},
+	})
+}
+
 func TestRequestTracer_MetadataHeader_DefaultPrefix(t *testing.T) {
 	t.Setenv("AIGW_METADATA_ATTR_PREFIX", "")
 	prevPrefix := metadataAttrPrefix
