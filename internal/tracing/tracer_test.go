@@ -660,7 +660,7 @@ func (testRerankTracerRecorder) RecordResponseOnError(span oteltrace.Span, statu
 
 // Mock recorder for testing responses span
 type testResponsesRecorder struct {
-	tracing.NoopChunkRecorder[struct{}]
+	tracing.NoopChunkRecorder[openai.ResponseStreamEventUnion]
 }
 
 func (r testResponsesRecorder) StartParams(_ *openai.ResponseRequest, _ []byte) (string, []oteltrace.SpanStartOption) {
@@ -685,13 +685,638 @@ func (r testResponsesRecorder) RecordResponse(span oteltrace.Span, resp *openai.
 	)
 }
 
-func (r testResponsesRecorder) RecordResponseChunks(span oteltrace.Span, chunks []*openai.ResponseStreamEventUnion) {
-	span.SetAttributes(attribute.Int("eventCount", len(chunks)))
-}
-
 func (r testResponsesRecorder) RecordResponseOnError(span oteltrace.Span, statusCode int, body []byte) {
 	span.SetAttributes(
 		attribute.Int("statusCode", statusCode),
 		attribute.String("errorBody", string(body)),
 	)
+}
+
+// TestFlattenJSON tests the flattenJSON function with various input types including arrays.
+func TestFlattenJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    any
+		expected map[string]string
+	}{
+		{
+			name: "simple object",
+			input: map[string]any{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			expected: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+		},
+		{
+			name: "nested object",
+			input: map[string]any{
+				"user": map[string]any{
+					"id":   "123",
+					"name": "John",
+				},
+			},
+			expected: map[string]string{
+				"user.id":   "123",
+				"user.name": "John",
+			},
+		},
+		{
+			name: "deeply nested object",
+			input: map[string]any{
+				"a": map[string]any{
+					"b": map[string]any{
+						"c": "value",
+					},
+				},
+			},
+			expected: map[string]string{
+				"a.b.c": "value",
+			},
+		},
+		{
+			name: "simple array",
+			input: map[string]any{
+				"tags": []any{"tag1", "tag2", "tag3"},
+			},
+			expected: map[string]string{
+				"tags.0": "tag1",
+				"tags.1": "tag2",
+				"tags.2": "tag3",
+			},
+		},
+		{
+			name:  "top-level array",
+			input: []any{"item1", "item2", "item3"},
+			expected: map[string]string{
+				"0": "item1",
+				"1": "item2",
+				"2": "item3",
+			},
+		},
+		{
+			name: "array of objects",
+			input: map[string]any{
+				"users": []any{
+					map[string]any{"id": "1", "name": "Alice"},
+					map[string]any{"id": "2", "name": "Bob"},
+				},
+			},
+			expected: map[string]string{
+				"users.0.id":   "1",
+				"users.0.name": "Alice",
+				"users.1.id":   "2",
+				"users.1.name": "Bob",
+			},
+		},
+		{
+			name: "nested array",
+			input: map[string]any{
+				"matrix": []any{
+					[]any{"a", "b"},
+					[]any{"c", "d"},
+				},
+			},
+			expected: map[string]string{
+				"matrix.0.0": "a",
+				"matrix.0.1": "b",
+				"matrix.1.0": "c",
+				"matrix.1.1": "d",
+			},
+		},
+		{
+			name: "mixed object and array",
+			input: map[string]any{
+				"user": map[string]any{
+					"id":   "123",
+					"tags": []any{"vip", "beta"},
+				},
+				"count": float64(42),
+			},
+			expected: map[string]string{
+				"user.id":     "123",
+				"user.tags.0": "vip",
+				"user.tags.1": "beta",
+				"count":       "42",
+			},
+		},
+		{
+			name: "various types",
+			input: map[string]any{
+				"string": "text",
+				"number": float64(123.45),
+				"bool":   true,
+				"null":   nil,
+			},
+			expected: map[string]string{
+				"string": "text",
+				"number": "123.45",
+				"bool":   "true",
+				"null":   "",
+			},
+		},
+		{
+			name: "empty array",
+			input: map[string]any{
+				"empty": []any{},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:     "empty object",
+			input:    map[string]any{},
+			expected: map[string]string{},
+		},
+		{
+			name: "array with mixed types",
+			input: map[string]any{
+				"mixed": []any{"string", float64(123), true, nil},
+			},
+			expected: map[string]string{
+				"mixed.0": "string",
+				"mixed.1": "123",
+				"mixed.2": "true",
+				"mixed.3": "",
+			},
+		},
+		{
+			name: "complex nested structure",
+			input: map[string]any{
+				"service": map[string]any{
+					"name": "api",
+					"endpoints": []any{
+						map[string]any{
+							"path":    "/users",
+							"methods": []any{"GET", "POST"},
+						},
+						map[string]any{
+							"path":    "/items",
+							"methods": []any{"GET"},
+						},
+					},
+					"active": true,
+				},
+			},
+			expected: map[string]string{
+				"service.name":                "api",
+				"service.endpoints.0.path":    "/users",
+				"service.endpoints.0.methods.0": "GET",
+				"service.endpoints.0.methods.1": "POST",
+				"service.endpoints.1.path":    "/items",
+				"service.endpoints.1.methods.0": "GET",
+				"service.active":              "true",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := make(map[string]string)
+			flattenJSON("", tt.input, result)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestParseMetadataHeader tests the parseMetadataHeader function with various JSON inputs.
+func TestParseMetadataHeader(t *testing.T) {
+	// Save and restore the original prefix
+	origPrefix := metadataAttrPrefix
+	t.Cleanup(func() { metadataAttrPrefix = origPrefix })
+	metadataAttrPrefix = "metadata."
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []attribute.KeyValue
+	}{
+		{
+			name:  "simple object",
+			input: `{"key":"value"}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.key", "value"),
+			},
+		},
+		{
+			name:  "nested object",
+			input: `{"user":{"id":"123","name":"John"}}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.user.id", "123"),
+				attribute.String("metadata.user.name", "John"),
+			},
+		},
+		{
+			name:  "array in object",
+			input: `{"tags":["tag1","tag2","tag3"]}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.tags.0", "tag1"),
+				attribute.String("metadata.tags.1", "tag2"),
+				attribute.String("metadata.tags.2", "tag3"),
+			},
+		},
+		{
+			name:  "array of objects",
+			input: `{"users":[{"id":"1"},{"id":"2"}]}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.users.0.id", "1"),
+				attribute.String("metadata.users.1.id", "2"),
+			},
+		},
+		{
+			name:  "mixed types",
+			input: `{"str":"text","num":42,"bool":true,"null":null}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.str", "text"),
+				attribute.String("metadata.num", "42"),
+				attribute.String("metadata.bool", "true"),
+				attribute.String("metadata.null", ""),
+			},
+		},
+		{
+			name:  "invalid JSON",
+			input: `{invalid json}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.raw", "{invalid json}"),
+			},
+		},
+		{
+			name:  "empty object",
+			input: `{}`,
+			expected: []attribute.KeyValue{},
+		},
+		{
+			name:  "complex nested structure",
+			input: `{"service":{"name":"api","endpoints":[{"path":"/users","methods":["GET","POST"]},{"path":"/items"}]}}`,
+			expected: []attribute.KeyValue{
+				attribute.String("metadata.service.name", "api"),
+				attribute.String("metadata.service.endpoints.0.path", "/users"),
+				attribute.String("metadata.service.endpoints.0.methods.0", "GET"),
+				attribute.String("metadata.service.endpoints.0.methods.1", "POST"),
+				attribute.String("metadata.service.endpoints.1.path", "/items"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseMetadataHeader(tt.input)
+
+			// Convert both to maps for easier comparison (order doesn't matter)
+			resultMap := make(map[attribute.Key]attribute.Value)
+			for _, attr := range result {
+				resultMap[attr.Key] = attr.Value
+			}
+
+			expectedMap := make(map[attribute.Key]attribute.Value)
+			for _, attr := range tt.expected {
+				expectedMap[attr.Key] = attr.Value
+			}
+
+			require.Equal(t, expectedMap, resultMap)
+		})
+	}
+}
+
+// TestParseMetadataHeader_LargeStructure tests that very large metadata structures
+// are stored as JSON to avoid hitting span attribute limits.
+func TestParseMetadataHeader_LargeStructure(t *testing.T) {
+	// Save and restore the original prefix
+	origPrefix := metadataAttrPrefix
+	t.Cleanup(func() { metadataAttrPrefix = origPrefix })
+	metadataAttrPrefix = "metadata."
+
+	// Create a JSON structure that will exceed maxFlattenedAttributes
+	largeArray := make([]map[string]any, 20) // 20 items
+	for i := 0; i < 20; i++ {
+		largeArray[i] = map[string]any{
+			"id":       fmt.Sprintf("item-%d", i),
+			"name":     fmt.Sprintf("Name %d", i),
+			"value":    i * 100,
+			"active":   i%2 == 0,
+			"metadata": fmt.Sprintf("meta-%d", i),
+		}
+	}
+	// 20 items * 5 fields = 100 attributes (exceeds maxFlattenedAttributes of 50)
+
+	input := map[string]any{
+		"items": largeArray,
+	}
+	jsonBytes, err := json.Marshal(input)
+	require.NoError(t, err)
+	jsonString := string(jsonBytes)
+
+	result := parseMetadataHeader(jsonString)
+
+	// Should return JSON fallback instead of flattened attributes
+	require.Len(t, result, 2)
+
+	resultMap := make(map[attribute.Key]attribute.Value)
+	for _, attr := range result {
+		resultMap[attr.Key] = attr.Value
+	}
+
+	// Check that it fell back to JSON storage
+	require.Contains(t, resultMap, attribute.Key("metadata.json"))
+	require.Equal(t, jsonString, resultMap[attribute.Key("metadata.json")].AsString())
+
+	// Check that it includes the count
+	require.Contains(t, resultMap, attribute.Key("metadata.flattened_count"))
+	require.Equal(t, int64(100), resultMap[attribute.Key("metadata.flattened_count")].AsInt64())
+}
+
+// TestParseMetadataHeader_BelowLimit tests that structures below the limit
+// are still flattened normally.
+func TestParseMetadataHeader_BelowLimit(t *testing.T) {
+	// Save and restore the original prefix
+	origPrefix := metadataAttrPrefix
+	t.Cleanup(func() { metadataAttrPrefix = origPrefix })
+	metadataAttrPrefix = "metadata."
+
+	// Create a structure with exactly maxFlattenedAttributes (should still flatten)
+	items := make([]map[string]any, 10) // 10 items
+	for i := 0; i < 10; i++ {
+		items[i] = map[string]any{
+			"id":   fmt.Sprintf("item-%d", i),
+			"name": fmt.Sprintf("Name %d", i),
+			"val":  i * 10,
+		}
+	}
+	// 10 items * 3 fields = 30 attributes (below maxFlattenedAttributes of 50)
+
+	input := map[string]any{
+		"items": items,
+	}
+	jsonBytes, err := json.Marshal(input)
+	require.NoError(t, err)
+
+	result := parseMetadataHeader(string(jsonBytes))
+
+	// Should be flattened (not JSON fallback)
+	require.Equal(t, 30, len(result))
+
+	// Verify some of the flattened attributes
+	resultMap := make(map[attribute.Key]attribute.Value)
+	for _, attr := range result {
+		resultMap[attr.Key] = attr.Value
+	}
+
+	require.Equal(t, "item-0", resultMap[attribute.Key("metadata.items.0.id")].AsString())
+	require.Equal(t, "item-9", resultMap[attribute.Key("metadata.items.9.id")].AsString())
+	require.Equal(t, "Name 5", resultMap[attribute.Key("metadata.items.5.name")].AsString())
+
+	// Should NOT have the JSON fallback keys
+	require.NotContains(t, resultMap, attribute.Key("metadata.json"))
+	require.NotContains(t, resultMap, attribute.Key("metadata.flattened_count"))
+}
+
+// TestParseMetadataHeader_ExactlyAtLimit tests the boundary condition.
+func TestParseMetadataHeader_ExactlyAtLimit(t *testing.T) {
+	// Save and restore the original prefix
+	origPrefix := metadataAttrPrefix
+	t.Cleanup(func() { metadataAttrPrefix = origPrefix })
+	metadataAttrPrefix = "metadata."
+
+	// Create exactly maxFlattenedAttributes (50) attributes
+	items := make(map[string]any)
+	for i := 0; i < 50; i++ {
+		items[fmt.Sprintf("field_%d", i)] = fmt.Sprintf("value_%d", i)
+	}
+
+	input := map[string]any{
+		"data": items,
+	}
+	jsonBytes, err := json.Marshal(input)
+	require.NoError(t, err)
+
+	result := parseMetadataHeader(string(jsonBytes))
+
+	// Should be flattened (50 is at the limit, not over)
+	require.Equal(t, 50, len(result))
+
+	// Verify it's flattened, not JSON
+	resultMap := make(map[attribute.Key]attribute.Value)
+	for _, attr := range result {
+		resultMap[attr.Key] = attr.Value
+	}
+	require.NotContains(t, resultMap, attribute.Key("metadata.json"))
+}
+
+// TestParseMetadataHeader_OneOverLimit tests exceeding the limit by one.
+func TestParseMetadataHeader_OneOverLimit(t *testing.T) {
+	// Save and restore the original prefix
+	origPrefix := metadataAttrPrefix
+	t.Cleanup(func() { metadataAttrPrefix = origPrefix })
+	metadataAttrPrefix = "metadata."
+
+	// Create maxFlattenedAttributes + 1 (51) attributes
+	items := make(map[string]any)
+	for i := 0; i < 51; i++ {
+		items[fmt.Sprintf("field_%d", i)] = fmt.Sprintf("value_%d", i)
+	}
+
+	input := map[string]any{
+		"data": items,
+	}
+	jsonBytes, err := json.Marshal(input)
+	require.NoError(t, err)
+	jsonString := string(jsonBytes)
+
+	result := parseMetadataHeader(jsonString)
+
+	// Should fall back to JSON (51 exceeds the limit of 50)
+	require.Len(t, result, 2)
+
+	resultMap := make(map[attribute.Key]attribute.Value)
+	for _, attr := range result {
+		resultMap[attr.Key] = attr.Value
+	}
+
+	require.Contains(t, resultMap, attribute.Key("metadata.json"))
+	require.Equal(t, jsonString, resultMap[attribute.Key("metadata.json")].AsString())
+	require.Equal(t, int64(51), resultMap[attribute.Key("metadata.flattened_count")].AsInt64())
+}
+
+// TestRequestTracer_MetadataHeaderWithArrays tests that array metadata is properly flattened
+// and added as span attributes.
+func TestRequestTracer_MetadataHeaderWithArrays(t *testing.T) {
+	reqBody, err := json.Marshal(req)
+	require.NoError(t, err)
+	spanName := fmt.Sprintf("non-stream len: %d", len(reqBody))
+
+	tests := []struct {
+		name            string
+		metadataJSON    string
+		expectedAttrs   map[string]string
+	}{
+		{
+			name:         "simple array",
+			metadataJSON: `{"tags":["tag1","tag2","tag3"]}`,
+			expectedAttrs: map[string]string{
+				"metadata.tags.0": "tag1",
+				"metadata.tags.1": "tag2",
+				"metadata.tags.2": "tag3",
+			},
+		},
+		{
+			name:         "array of objects",
+			metadataJSON: `{"items":[{"id":"1","type":"A"},{"id":"2","type":"B"}]}`,
+			expectedAttrs: map[string]string{
+				"metadata.items.0.id":   "1",
+				"metadata.items.0.type": "A",
+				"metadata.items.1.id":   "2",
+				"metadata.items.1.type": "B",
+			},
+		},
+		{
+			name:         "nested arrays",
+			metadataJSON: `{"matrix":[["a","b"],["c","d"]]}`,
+			expectedAttrs: map[string]string{
+				"metadata.matrix.0.0": "a",
+				"metadata.matrix.0.1": "b",
+				"metadata.matrix.1.0": "c",
+				"metadata.matrix.1.1": "d",
+			},
+		},
+		{
+			name:         "mixed object and array",
+			metadataJSON: `{"user":{"id":"123","roles":["admin","user"]},"count":5}`,
+			expectedAttrs: map[string]string{
+				"metadata.user.id":      "123",
+				"metadata.user.roles.0": "admin",
+				"metadata.user.roles.1": "user",
+				"metadata.count":        "5",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := map[string]string{
+				"x-ai-metadata": tt.metadataJSON,
+			}
+
+			runRequestTracerLifecycleTest(t, requestTracerLifecycleTest[openai.ChatCompletionRequest, openai.ChatCompletionResponse, openai.ChatCompletionResponseChunk]{
+				constructor:      chatCompletionTracerCtor,
+				req:              req,
+				headers:          headers,
+				reqBody:          reqBody,
+				expectedSpanName: spanName,
+				expectedSpanType: (*chatCompletionSpan)(nil),
+				recordAndEnd: func(span tracing.ChatCompletionSpan) {
+					span.EndSpan()
+				},
+				assertAttrs: func(t *testing.T, attrs []attribute.KeyValue) {
+					attrMap := make(map[attribute.Key]attribute.Value, len(attrs))
+					for _, attr := range attrs {
+						attrMap[attr.Key] = attr.Value
+					}
+
+					// Check metadata attributes
+					for key, expectedValue := range tt.expectedAttrs {
+						actualValue, ok := attrMap[attribute.Key(key)]
+						require.True(t, ok, "Expected attribute %s not found", key)
+						require.Equal(t, expectedValue, actualValue.AsString(), "Mismatch for attribute %s", key)
+					}
+				},
+			})
+		})
+	}
+}
+
+// TestRequestTracer_MetadataHeader_LargeStructure tests that very large metadata
+// is handled gracefully without hitting attribute limits.
+func TestRequestTracer_MetadataHeader_LargeStructure(t *testing.T) {
+	reqBody, err := json.Marshal(req)
+	require.NoError(t, err)
+	spanName := fmt.Sprintf("non-stream len: %d", len(reqBody))
+
+	// Create a large structure that exceeds maxFlattenedAttributes
+	largeArray := make([]map[string]any, 20)
+	for i := 0; i < 20; i++ {
+		largeArray[i] = map[string]any{
+			"id":       fmt.Sprintf("item-%d", i),
+			"name":     fmt.Sprintf("Name %d", i),
+			"value":    i * 100,
+			"active":   i%2 == 0,
+			"metadata": fmt.Sprintf("meta-%d", i),
+		}
+	}
+	largeMetadata := map[string]any{
+		"items": largeArray,
+	}
+	largeJSON, err := json.Marshal(largeMetadata)
+	require.NoError(t, err)
+
+	headers := map[string]string{
+		"x-ai-metadata": string(largeJSON),
+	}
+
+	runRequestTracerLifecycleTest(t, requestTracerLifecycleTest[openai.ChatCompletionRequest, openai.ChatCompletionResponse, openai.ChatCompletionResponseChunk]{
+		constructor:      chatCompletionTracerCtor,
+		req:              req,
+		headers:          headers,
+		reqBody:          reqBody,
+		expectedSpanName: spanName,
+		expectedSpanType: (*chatCompletionSpan)(nil),
+		recordAndEnd: func(span tracing.ChatCompletionSpan) {
+			span.EndSpan()
+		},
+		assertAttrs: func(t *testing.T, attrs []attribute.KeyValue) {
+			attrMap := make(map[attribute.Key]attribute.Value, len(attrs))
+			for _, attr := range attrs {
+				attrMap[attr.Key] = attr.Value
+			}
+
+			// Should have fallen back to JSON storage
+			require.Contains(t, attrMap, attribute.Key("metadata.json"))
+			require.Equal(t, string(largeJSON), attrMap[attribute.Key("metadata.json")].AsString())
+
+			// Should include the count of what would have been created
+			require.Contains(t, attrMap, attribute.Key("metadata.flattened_count"))
+			require.Equal(t, int64(100), attrMap[attribute.Key("metadata.flattened_count")].AsInt64())
+
+			// Should NOT have individual flattened attributes
+			require.NotContains(t, attrMap, attribute.Key("metadata.items.0.id"))
+			require.NotContains(t, attrMap, attribute.Key("metadata.items.0.name"))
+		},
+	})
+}
+
+// TestParseMetadataHeader_CustomLimit tests that the limit can be configured via env var.
+func TestParseMetadataHeader_CustomLimit(t *testing.T) {
+	// Save and restore
+	origPrefix := metadataAttrPrefix
+	origLimit := maxFlattenedAttributes
+	t.Cleanup(func() {
+		metadataAttrPrefix = origPrefix
+		maxFlattenedAttributes = origLimit
+	})
+	metadataAttrPrefix = "metadata."
+
+	// Set custom limit to 10
+	t.Setenv("AIGW_MAX_FLATTENED_ATTRIBUTES", "10")
+	maxFlattenedAttributes = resolveMaxFlattenedAttributes()
+
+	// Create 15 attributes (exceeds custom limit of 10)
+	items := make(map[string]any)
+	for i := 0; i < 15; i++ {
+		items[fmt.Sprintf("field_%d", i)] = fmt.Sprintf("value_%d", i)
+	}
+	input := map[string]any{"data": items}
+	jsonBytes, err := json.Marshal(input)
+	require.NoError(t, err)
+	jsonString := string(jsonBytes)
+
+	result := parseMetadataHeader(jsonString)
+
+	// Should fall back to JSON (15 exceeds custom limit of 10)
+	require.Len(t, result, 2)
+	resultMap := make(map[attribute.Key]attribute.Value)
+	for _, attr := range result {
+		resultMap[attr.Key] = attr.Value
+	}
+	require.Contains(t, resultMap, attribute.Key("metadata.json"))
+	require.Equal(t, int64(15), resultMap[attribute.Key("metadata.flattened_count")].AsInt64())
 }

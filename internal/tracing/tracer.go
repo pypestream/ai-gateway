@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -30,6 +31,10 @@ const (
 	defaultMetadataHeaderName = "x-ai-metadata"
 	// defaultMetadataAttrPrefix is the prefix used for all metadata span attributes.
 	defaultMetadataAttrPrefix = "metadata."
+	// defaultMaxFlattenedAttributes is the default limit for flattened metadata attributes.
+	// If flattening would create more attributes than this, we fall back to storing
+	// the metadata as a single JSON string to avoid hitting span attribute limits.
+	defaultMaxFlattenedAttributes = 50
 )
 
 var (
@@ -40,6 +45,9 @@ var (
 	metadataHeaderName = resolveMetadataHeaderName()
 	// metadataAttrPrefix holds the effective attribute prefix for metadata attributes.
 	metadataAttrPrefix = resolveMetadataAttrPrefix()
+	// maxFlattenedAttributes holds the maximum number of flattened attributes allowed,
+	// derived from the environment variable once at init.
+	maxFlattenedAttributes = resolveMaxFlattenedAttributes()
 )
 
 // resolveSpanNameHeaderName derives the span name override header from env with a fallback.
@@ -68,6 +76,16 @@ func resolveMetadataAttrPrefix() string {
 		return v + "."
 	}
 	return defaultMetadataAttrPrefix
+}
+
+// resolveMaxFlattenedAttributes derives the max flattened attributes limit from env with a fallback.
+func resolveMaxFlattenedAttributes() int {
+	if v := strings.TrimSpace(os.Getenv("AIGW_MAX_FLATTENED_ATTRIBUTES")); v != "" {
+		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
+			return limit
+		}
+	}
+	return defaultMaxFlattenedAttributes
 }
 
 // flattenJSON recursively flattens a nested JSON structure into dot-notation keys.
@@ -107,6 +125,8 @@ func flattenJSON(prefix string, data any, result map[string]string) {
 // parseMetadataHeader attempts to parse the metadata header value as JSON and
 // returns flattened span attributes. If parsing fails, it falls back to storing
 // the raw string value under "metadata.raw".
+// If flattening would create more than maxFlattenedAttributes, it stores the
+// entire JSON as a single attribute to avoid hitting span attribute limits.
 func parseMetadataHeader(headerValue string) []attribute.KeyValue {
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(headerValue), &parsed); err != nil {
@@ -118,6 +138,15 @@ func parseMetadataHeader(headerValue string) []attribute.KeyValue {
 
 	flattened := make(map[string]string)
 	flattenJSON("", parsed, flattened)
+
+	// If the flattened structure would create too many attributes,
+	// store as a single JSON string instead to avoid hitting span attribute limits.
+	if len(flattened) > maxFlattenedAttributes {
+		return []attribute.KeyValue{
+			attribute.String(metadataAttrPrefix+"json", headerValue),
+			attribute.Int(metadataAttrPrefix+"flattened_count", len(flattened)),
+		}
+	}
 
 	attrs := make([]attribute.KeyValue, 0, len(flattened))
 	for key, value := range flattened {
