@@ -31,10 +31,20 @@ const (
 	GenAIOperationImageGeneration GenAIOperation = "image_generation"
 	GenAIOperationResponses       GenAIOperation = "responses"
 	GenAIOperationRerank          GenAIOperation = "rerank"
-	genaiProviderOpenAI                          = "openai"
-	genaiProviderAWSBedrock                      = "aws.bedrock"
-	genaiTokenTypeInput                          = "input"
-	genaiTokenTypeOutput                         = "output"
+
+	// Provider names according to the Semantic Conventions for Generative AI Metrics.
+	// See: https://opentelemetry.io/docs/specs/semconv/attributes-registry/gen-ai/
+	genaiProviderOpenAI       = "openai"
+	genaiProviderAzureOpenAI  = "azure.openai"
+	genaiProviderAWSBedrock   = "aws.bedrock"
+	genaiProviderAWSAnthropic = "aws.anthropic"
+	genaiProviderGCPVertexAI  = "gcp.vertex_ai"
+	genaiProviderGCPAnthropic = "gcp.anthropic"
+	genaiProviderAnthropic    = "anthropic"
+	genaiProviderCohere       = "cohere"
+
+	genaiTokenTypeInput  = "input"
+	genaiTokenTypeOutput = "output"
 	// "cached_input" is not yet part of the spec but has been proposed:
 	// https://github.com/open-telemetry/semantic-conventions/issues/1959
 	//
@@ -89,7 +99,7 @@ func newGenAI(meter metric.Meter) *genAI {
 			genaiMetricServerTimeToFirstToken,
 			metric.WithDescription("Time to receive first token in streaming responses."),
 			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0),
+			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0),
 		),
 		outputTokenLatency: mustRegisterHistogram(meter,
 			genaiMetricServerTimePerOutputToken,

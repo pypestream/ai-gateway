@@ -18,10 +18,10 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/metrics"
-	tracing "github.com/envoyproxy/ai-gateway/internal/tracing/api"
+	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
 )
 
-var sseEventPrefix = []byte("event:")
+var sseEventPrefix = []byte("event: ")
 
 // streamingToolCall holds the state for a single tool call that is being streamed.
 type streamingToolCall struct {
@@ -60,7 +60,7 @@ func (p *anthropicStreamParser) writeChunk(eventBlock []byte, buf *[]byte) error
 		return err
 	}
 	if chunk != nil {
-		err := serializeOpenAIChatCompletionChunk(*chunk, buf)
+		err := serializeOpenAIChatCompletionChunk(chunk, buf)
 		if err != nil {
 			return err
 		}
@@ -70,11 +70,11 @@ func (p *anthropicStreamParser) writeChunk(eventBlock []byte, buf *[]byte) error
 
 // Process reads from the Anthropic SSE stream, translates events to OpenAI chunks,
 // and returns the mutations for Envoy.
-func (p *anthropicStreamParser) Process(body io.Reader, endOfStream bool, span tracing.ChatCompletionSpan) (
+func (p *anthropicStreamParser) Process(body io.Reader, endOfStream bool, span tracingapi.ChatCompletionSpan) (
 	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
 ) {
 	newBody = make([]byte, 0)
-	_ = span // TODO: add support for streaming chunks in tracing.
+	_ = span // TODO: add support for streaming chunks in tracingapi.
 	responseModel = p.requestModel
 	if _, err = p.buffer.ReadFrom(body); err != nil {
 		err = fmt.Errorf("failed to read from stream body: %w", err)
@@ -111,7 +111,7 @@ func (p *anthropicStreamParser) Process(body io.Reader, endOfStream bool, span t
 		totalTokens, _ := p.tokenUsage.TotalTokens()
 		cachedTokens, _ := p.tokenUsage.CachedInputTokens()
 		cacheCreationTokens, _ := p.tokenUsage.CacheCreationInputTokens()
-		finalChunk := openai.ChatCompletionResponseChunk{
+		finalChunk := &openai.ChatCompletionResponseChunk{
 			ID:      p.activeMessageID,
 			Created: p.created,
 			Object:  "chat.completion.chunk",
@@ -199,11 +199,11 @@ func (p *anthropicStreamParser) handleAnthropicStreamEvent(eventType []byte, dat
 		p.activeMessageID = event.Message.ID
 		p.created = openai.JSONUNIXTime(time.Now())
 		u := event.Message.Usage
-		usage := metrics.ExtractTokenUsageFromAnthropic(
+		usage := metrics.ExtractTokenUsageFromExplicitCaching(
 			u.InputTokens,
 			u.OutputTokens,
-			u.CacheReadInputTokens,
-			u.CacheCreationInputTokens,
+			&u.CacheReadInputTokens,
+			&u.CacheCreationInputTokens,
 		)
 		// For message_start, we store the initial usage but don't add to the accumulated
 		// The message_delta event will contain the final totals
@@ -281,11 +281,11 @@ func (p *anthropicStreamParser) handleAnthropicStreamEvent(eventType []byte, dat
 			return nil, fmt.Errorf("unmarshal message_delta: %w", err)
 		}
 		u := event.Usage
-		usage := metrics.ExtractTokenUsageFromAnthropic(
+		usage := metrics.ExtractTokenUsageFromExplicitCaching(
 			u.InputTokens,
 			u.OutputTokens,
-			u.CacheReadInputTokens,
-			u.CacheCreationInputTokens,
+			&u.CacheReadInputTokens,
+			&u.CacheCreationInputTokens,
 		)
 		// For message_delta, accumulate the incremental output tokens
 		if output, ok := usage.OutputTokens(); ok {
