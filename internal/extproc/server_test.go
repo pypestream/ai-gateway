@@ -21,7 +21,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
@@ -30,7 +29,9 @@ import (
 )
 
 func requireNewServerWithMockProcessor(t *testing.T) (*Server, *mockProcessor) {
-	s, err := NewServer(slog.Default())
+	s, err := NewServer(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	s.config = &filterapi.RuntimeConfig{}
@@ -207,7 +208,7 @@ func TestServer_Process(t *testing.T) {
 		}
 		ms := &mockExternalProcessingStream{t: t, ctx: t.Context(), retRecv: req}
 		err := s.Process(ms)
-		require.ErrorContains(t, err, "missing xds.upstream_host_metadata in request")
+		require.ErrorContains(t, err, `missing backend name in attributes at path: xds.upstream_host_metadata.filter_metadata['aigateway.envoy.io']['per_route_rule_backend_name']`)
 	})
 	t.Run("ok", func(t *testing.T) {
 		s, p := requireNewServerWithMockProcessor(t)
@@ -231,6 +232,7 @@ func TestServer_Process(t *testing.T) {
 	t.Run("without going through request headers phase", func(t *testing.T) {
 		// This is a regression test as in #419.
 		s, _ := requireNewServerWithMockProcessor(t)
+		s.debugLogEnabled = false // Disable debug log path to avoid redacted header logging interfering with the test.
 		expResponse := &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_ResponseHeaders{}}
 		req := &extprocv3.ProcessingRequest{Request: &extprocv3.ProcessingRequest_ResponseHeaders{
 			ResponseHeaders: &extprocv3.HttpHeaders{Headers: &corev3.HeaderMap{Headers: []*corev3.HeaderValue{{Key: ":status", Value: "403"}}}},
@@ -241,67 +243,6 @@ func TestServer_Process(t *testing.T) {
 		err := s.Process(ms)
 		require.ErrorContains(t, err, "context deadline exceeded")
 	})
-}
-
-// TestServer_setBackend_legacy is the tests for the legacy behavior of setBackend function
-// using the text-encoded Metadata proto in the xds.upstream_host_metadata or xds.cluster_metadata field.
-//
-// TODO: delete this test after the v0.5 is released.
-func TestServer_setBackend_legacy(t *testing.T) {
-	for _, tc := range []struct {
-		md     *corev3.Metadata
-		errStr string
-	}{
-		{md: &corev3.Metadata{
-			FilterMetadata: map[string]*structpb.Struct{"foo": {}},
-		}, errStr: "missing aigateway.envoy.io metadata"},
-		{
-			md:     &corev3.Metadata{FilterMetadata: map[string]*structpb.Struct{internalapi.InternalEndpointMetadataNamespace: {}}},
-			errStr: "missing per_route_rule_backend_name in endpoint metadata",
-		},
-		{
-			md: &corev3.Metadata{FilterMetadata: map[string]*structpb.Struct{internalapi.InternalEndpointMetadataNamespace: {
-				Fields: map[string]*structpb.Value{
-					internalapi.InternalMetadataBackendNameKey: {Kind: &structpb.Value_StringValue{StringValue: "kserve"}},
-				},
-			}}},
-			errStr: "unknown backend: kserve",
-		},
-		{
-			md: &corev3.Metadata{FilterMetadata: map[string]*structpb.Struct{internalapi.InternalEndpointMetadataNamespace: {
-				Fields: map[string]*structpb.Value{
-					internalapi.InternalMetadataBackendNameKey: {Kind: &structpb.Value_StringValue{StringValue: "openai"}},
-				},
-			}}},
-			errStr: "no router processor found, request_id=aaaaaaaaaaaa, backend=openai",
-		},
-	} {
-		for _, isEndpointPicker := range []bool{false, true} {
-			t.Run(fmt.Sprintf("errors/%s/isEndpointPicker=%t", tc.errStr, isEndpointPicker), func(t *testing.T) {
-				str, err := prototext.Marshal(tc.md)
-				require.NoError(t, err)
-				s, _ := requireNewServerWithMockProcessor(t)
-				s.config.Backends = map[string]*filterapi.RuntimeBackend{"openai": {Backend: &filterapi.Backend{Name: "openai", HeaderMutation: &filterapi.HTTPHeaderMutation{Set: []filterapi.HTTPHeader{{Name: "x-foo", Value: "foo"}}}}}}
-				mockProc := &mockProcessor{}
-
-				// Use the correct metadata field key based on isEndpointPicker.
-				metadataFieldKey := "xds.upstream_host_metadata"
-				if isEndpointPicker {
-					metadataFieldKey = "xds.cluster_metadata"
-				}
-
-				err = s.setBackend(t.Context(), mockProc, "aaaaaaaaaaaa", isEndpointPicker, &extprocv3.ProcessingRequest{
-					Attributes: map[string]*structpb.Struct{
-						"envoy.filters.http.ext_proc": {Fields: map[string]*structpb.Value{
-							metadataFieldKey: {Kind: &structpb.Value_StringValue{StringValue: string(str)}},
-						}},
-					},
-					Request: &extprocv3.ProcessingRequest_RequestHeaders{RequestHeaders: &extprocv3.HttpHeaders{}},
-				})
-				require.ErrorContains(t, err, tc.errStr)
-			})
-		}
-	}
 }
 
 func TestServer_setBackend(t *testing.T) {

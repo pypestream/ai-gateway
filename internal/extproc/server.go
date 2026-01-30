@@ -23,7 +23,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/prototext"
 
 	"github.com/envoyproxy/ai-gateway/internal/backendauth"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
@@ -100,7 +99,7 @@ func (s *Server) processorForPath(requestHeaders map[string]string, isUpstreamFi
 
 // originalPathHeader is the header used to pass the original path to the processor.
 // This is used in the upstream filter level to determine the original path of the request on retry.
-const originalPathHeader = internalapi.EnvoyAIGatewayHeaderPrefix + "original-path"
+const originalPathHeader = internalapi.OriginalPathHeader
 
 // internalReqIDHeader is the header used to pass the unique internal request ID to the upstream filter.
 // This ensures that the upstream filter uses the same unique ID as the router filter to avoid race conditions.
@@ -222,7 +221,7 @@ func (s *Server) processMsg(ctx context.Context, l *slog.Logger, p Processor, re
 	case *extprocv3.ProcessingRequest_RequestHeaders:
 		requestHdrs := req.GetRequestHeaders().Headers
 		// If DEBUG log level is enabled, filter sensitive headers before logging.
-		if l.Enabled(ctx, slog.LevelDebug) {
+		if s.debugLogEnabled {
 			filteredHdrs := filterSensitiveHeadersForLogging(requestHdrs, sensitiveHeaderKeys)
 			l.Debug("request headers processing", slog.Any("request_headers", filteredHdrs))
 		}
@@ -268,7 +267,7 @@ func (s *Server) processMsg(ctx context.Context, l *slog.Logger, p Processor, re
 		}
 		resp, err := p.ProcessRequestBody(ctx, value.RequestBody)
 		// If the DEBUG log level is enabled, filter the sensitive body before logging.
-		if l.Enabled(ctx, slog.LevelDebug) {
+		if s.debugLogEnabled {
 			filteredBody := filterSensitiveRequestBodyForLogging(resp, l, sensitiveHeaderKeys)
 			l.Debug("request body processed", slog.Any("response", filteredBody))
 		}
@@ -315,46 +314,18 @@ func (s *Server) setBackend(ctx context.Context, p Processor, internalReqID stri
 		return status.Error(codes.Internal, "missing attributes in request")
 	}
 	// metadataFieldKey is the key for the entire metadata field in the attributes for backward compatibility.
-	// backendNamePath is the path to the backend name in the metadata.
-	var metadataFieldKey, backendNamePath string
+	var backendNamePath string
 	if isEndpointPicker {
-		metadataFieldKey = internalapi.XDSClusterMetadataKey
 		backendNamePath = internalapi.XDSClusterMetadataBackendNamePath
 	} else {
-		metadataFieldKey = internalapi.XDSUpstreamHostMetadataKey
 		backendNamePath = internalapi.XDSUpstreamHostMetadataBackendNamePath
 	}
 
 	var backendName string
 	if b, ok := attributes.Fields[backendNamePath]; ok {
 		backendName = b.GetStringValue()
-	} else if hostMetadata, ok := attributes.Fields[metadataFieldKey]; ok {
-		// This is the backward compatible path where we read the full host metadata, which
-		// can be fragile due to how unstable proto text format can be. After v0.5 is release,
-		// we can remove this code path.
-
-		// Unmarshal the text into the struct since the metadata is encoded as a proto string.
-		var metadata corev3.Metadata
-		opt := prototext.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}
-		err := opt.Unmarshal([]byte(hostMetadata.GetStringValue()), &metadata)
-		if err != nil {
-			return status.Errorf(codes.Internal,
-				"cannot unmarshal host metadata '%s': %v",
-				hostMetadata.GetStringValue(),
-				err)
-		}
-
-		aiGatewayEndpointMetadata, ok := metadata.FilterMetadata[internalapi.InternalEndpointMetadataNamespace]
-		if !ok {
-			return status.Errorf(codes.Internal, "missing %s metadata", internalapi.InternalEndpointMetadataNamespace)
-		}
-		b, ok := aiGatewayEndpointMetadata.Fields[internalapi.InternalMetadataBackendNameKey]
-		if !ok {
-			return status.Errorf(codes.Internal, "missing %s in endpoint metadata", internalapi.InternalMetadataBackendNameKey)
-		}
-		backendName = b.GetStringValue()
 	} else {
-		return status.Errorf(codes.Internal, "missing %s in request", metadataFieldKey)
+		return status.Errorf(codes.Internal, "missing backend name in attributes at path: %s", backendNamePath)
 	}
 
 	backend, ok := s.config.Backends[backendName]

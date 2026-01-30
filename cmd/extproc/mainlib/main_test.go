@@ -92,10 +92,10 @@ func Test_parseAndValidateFlags(t *testing.T) {
 				logLevel:   slog.LevelInfo,
 			},
 			{
-				name: "with header mapping",
+				name: "with metrics header mapping",
 				args: []string{
 					"-configPath", "/path/to/config.yaml",
-					"-metricsRequestHeaderAttributes", "x-team-id:team.id,x-user-id:user.id",
+					"-metricsRequestHeaderAttributes", "x-tenant-id:tenant.id,x-tenant-id:tenant.id",
 				},
 				configPath: "/path/to/config.yaml",
 				rootPrefix: "/",
@@ -103,10 +103,22 @@ func Test_parseAndValidateFlags(t *testing.T) {
 				logLevel:   slog.LevelInfo,
 			},
 			{
-				name: "with tracing header attributes",
+				name: "with base header mapping",
 				args: []string{
 					"-configPath", "/path/to/config.yaml",
-					"-spanRequestHeaderAttributes", "x-session-id:session.id,x-user-id:user.id",
+					"-requestHeaderAttributes", "x-tenant-id:tenant.id",
+				},
+				configPath: "/path/to/config.yaml",
+				rootPrefix: "/",
+				addr:       ":1063",
+				logLevel:   slog.LevelInfo,
+			},
+			{
+				name: "with tracing and access log header attributes",
+				args: []string{
+					"-configPath", "/path/to/config.yaml",
+					"-spanRequestHeaderAttributes", "x-forwarded-proto:url.scheme",
+					"-logRequestHeaderAttributes", "x-forwarded-proto:url.scheme",
 				},
 				configPath: "/path/to/config.yaml",
 				rootPrefix: "/",
@@ -117,8 +129,8 @@ func Test_parseAndValidateFlags(t *testing.T) {
 				name: "with both metrics and tracing headers",
 				args: []string{
 					"-configPath", "/path/to/config.yaml",
-					"-metricsRequestHeaderAttributes", "x-user-id:user.id",
-					"-spanRequestHeaderAttributes", "x-session-id:session.id",
+					"-spanRequestHeaderAttributes", "x-forwarded-proto:url.scheme",
+					"-metricsRequestHeaderAttributes", "x-tenant-id:tenant.id",
 				},
 				configPath: "/path/to/config.yaml",
 				rootPrefix: "/",
@@ -133,8 +145,25 @@ func Test_parseAndValidateFlags(t *testing.T) {
 				require.Equal(t, tc.addr, flags.extProcAddr)
 				require.Equal(t, tc.logLevel, flags.logLevel)
 				require.Equal(t, tc.rootPrefix, flags.rootPrefix)
+				if tc.name == "minimal extProcFlags" {
+					require.Nil(t, flags.spanRequestHeaderAttributes)
+					require.Nil(t, flags.logRequestHeaderAttributes)
+				}
 			})
 		}
+	})
+
+	t.Run("empty span/log header mappings clear defaults", func(t *testing.T) {
+		flags, err := parseAndValidateFlags([]string{
+			"-configPath", "/path/to/config.yaml",
+			"-spanRequestHeaderAttributes", "",
+			"-logRequestHeaderAttributes", "",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, flags.spanRequestHeaderAttributes)
+		require.NotNil(t, flags.logRequestHeaderAttributes)
+		require.Empty(t, *flags.spanRequestHeaderAttributes)
+		require.Empty(t, *flags.logRequestHeaderAttributes)
 	})
 
 	t.Run("invalid extProcFlags", func(t *testing.T) {
@@ -160,13 +189,28 @@ func Test_parseAndValidateFlags(t *testing.T) {
 			},
 			{
 				name:          "invalid tracing header attributes - missing colon",
-				args:          []string{"-configPath", "/path/to/config.yaml", "-spanRequestHeaderAttributes", "x-session-id"},
-				expectedError: "failed to parse tracing header mapping: invalid header-attribute pair at position 1: \"x-session-id\" (expected format: header:attribute)",
+				args:          []string{"-configPath", "/path/to/config.yaml", "-spanRequestHeaderAttributes", "agent-session-id"},
+				expectedError: "failed to parse tracing header mapping: invalid header-attribute pair at position 1: \"agent-session-id\" (expected format: header:attribute)",
+			},
+			{
+				name:          "invalid request header attributes - missing colon",
+				args:          []string{"-configPath", "/path/to/config.yaml", "-requestHeaderAttributes", "agent-session-id"},
+				expectedError: "failed to parse request header mapping: invalid header-attribute pair at position 1: \"agent-session-id\" (expected format: header:attribute)",
 			},
 			{
 				name:          "invalid tracing header attributes - empty header",
 				args:          []string{"-configPath", "/path/to/config.yaml", "-spanRequestHeaderAttributes", ":session.id"},
 				expectedError: "failed to parse tracing header mapping: empty header or attribute at position 1: \":session.id\"",
+			},
+			{
+				name:          "invalid access log header attributes - missing colon",
+				args:          []string{"-configPath", "/path/to/config.yaml", "-logRequestHeaderAttributes", "agent-session-id"},
+				expectedError: "failed to parse access log header mapping: invalid header-attribute pair at position 1: \"agent-session-id\" (expected format: header:attribute)",
+			},
+			{
+				name:          "invalid access log header attributes - empty header",
+				args:          []string{"-configPath", "/path/to/config.yaml", "-logRequestHeaderAttributes", ":session.id"},
+				expectedError: "failed to parse access log header mapping: empty header or attribute at position 1: \":session.id\"",
 			},
 		}
 
@@ -189,9 +233,9 @@ func TestListenAddress(t *testing.T) {
 	defer lis.Close() //nolint:errcheck
 
 	tests := []struct {
-		addr        string
-		wantNetwork string
-		wantAddress string
+		addr            string
+		expectedNetwork string
+		expectedAddress string
 	}{
 		{lis.Addr().String(), "tcp", lis.Addr().String()},
 		{"unix://" + unixPath, "unix", unixPath},
@@ -200,8 +244,8 @@ func TestListenAddress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.addr, func(t *testing.T) {
 			network, address := listenAddress(tt.addr)
-			require.Equal(t, tt.wantNetwork, network)
-			require.Equal(t, tt.wantAddress, address)
+			require.Equal(t, tt.expectedNetwork, network)
+			require.Equal(t, tt.expectedAddress, address)
 		})
 	}
 	_, err = os.Stat(unixPath)
