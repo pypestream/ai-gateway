@@ -7,6 +7,7 @@ package tracing
 
 import (
 	"context"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -76,6 +77,15 @@ func (t *requestTracerImpl[ReqT, RespT, ChunkT]) StartSpanAndInjectHeaders(
 ) tracingapi.Span[RespT, ChunkT] {
 	parentCtx := t.propagator.Extract(ctx, propagation.MapCarrier(headers))
 	spanName, opts := t.recorder.StartParams(req, body)
+
+	// Allow clients to override the span name via custom header.
+	// This enables dynamic span naming based on request context.
+	if override, ok := headers[tracingapi.SpanNameHeaderName]; ok {
+		if name := strings.TrimSpace(override); name != "" {
+			spanName = name
+		}
+	}
+
 	newCtx, span := t.tracer.Start(parentCtx, spanName, opts...)
 
 	t.propagator.Inject(newCtx, carrier)
@@ -96,6 +106,15 @@ func (t *requestTracerImpl[ReqT, RespT, ChunkT]) StartSpanAndInjectHeaders(
 		}
 		if len(attrs) > 0 {
 			span.SetAttributes(attrs...)
+		}
+	}
+
+	// Parse and attach custom metadata from headers as span attributes.
+	// Supports nested JSON structures which are flattened into dot-notation attributes.
+	if metadataValue, ok := headers[tracingapi.MetadataHeaderName]; ok {
+		metadataAttr := tracingapi.ParseMetadataHeader(metadataValue)
+		if len(metadataAttr) > 0 {
+			span.SetAttributes(metadataAttr...)
 		}
 	}
 
