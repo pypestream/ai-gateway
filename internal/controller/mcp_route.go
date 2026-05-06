@@ -6,14 +6,12 @@
 package controller
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"strings"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -26,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	aigv1a1 "github.com/envoyproxy/ai-gateway/api/v1alpha1"
+	aigv1b1 "github.com/envoyproxy/ai-gateway/api/v1beta1"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 )
 
@@ -65,7 +63,7 @@ func NewMCPRouteController(
 func (c *MCPRouteController) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	c.logger.Info("Reconciling MCPRoute", "namespace", req.Namespace, "name", req.Name)
 
-	var MCPRoute aigv1a1.MCPRoute
+	var MCPRoute aigv1b1.MCPRoute
 	if err := c.client.Get(ctx, req.NamespacedName, &MCPRoute); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			c.logger.Info("Deleting MCPRoute",
@@ -77,16 +75,16 @@ func (c *MCPRouteController) Reconcile(ctx context.Context, req reconcile.Reques
 
 	if err := c.syncMCPRoute(ctx, &MCPRoute); err != nil {
 		c.logger.Error(err, "failed to sync MCPRoute")
-		c.updateMCPRouteStatus(ctx, &MCPRoute, aigv1a1.ConditionTypeNotAccepted, err.Error())
+		c.updateMCPRouteStatus(ctx, &MCPRoute, aigv1b1.ConditionTypeNotAccepted, err.Error())
 		return ctrl.Result{}, err
 	}
-	c.updateMCPRouteStatus(ctx, &MCPRoute, aigv1a1.ConditionTypeAccepted, "MCP Gateway Route reconciled successfully")
+	c.updateMCPRouteStatus(ctx, &MCPRoute, aigv1b1.ConditionTypeAccepted, "MCP Gateway Route reconciled successfully")
 	return reconcile.Result{}, nil
 }
 
 // syncMCPRoute is the main logic for reconciling the MCPRoute resource.
 // This is decoupled from the Reconcile method to centralize the error handling and status updates.
-func (c *MCPRouteController) syncMCPRoute(ctx context.Context, mcpRoute *aigv1a1.MCPRoute) error {
+func (c *MCPRouteController) syncMCPRoute(ctx context.Context, mcpRoute *aigv1b1.MCPRoute) error {
 	if handleFinalizer(ctx, c.client, c.logger, mcpRoute, c.syncGateways) { // Propagate the MCPRoute deletion all the way up to relevant Gateways.
 		return nil
 	}
@@ -113,7 +111,12 @@ func (c *MCPRouteController) syncMCPRoute(ctx context.Context, mcpRoute *aigv1a1
 		return fmt.Errorf("failed to create or update HTTPRoute: %w", err)
 	}
 
-	// Then, build HTTPRoute for each backend in the MCPRoute to avoid the hard limit of 16 Rules per HTTPRoute.
+	existingPerBackendRoutes, err := c.listExistingPerBackendHTTPRoutes(ctx, mcpRoute)
+	if err != nil {
+		return fmt.Errorf("failed to list existing per-backend HTTPRoutes: %w", err)
+	}
+
+	// Build HTTPRoute for each backend in the MCPRoute to avoid the hard limit of 16 Rules per HTTPRoute.
 	// The route here will be moved to the backend listener in the extension server behind the MCP Proxy.
 	//
 	// Each backend will have its own rule that matches the internalapi.MCPBackendHeader set by the MCP proxy.
@@ -121,10 +124,12 @@ func (c *MCPRouteController) syncMCPRoute(ctx context.Context, mcpRoute *aigv1a1
 	for i := range mcpRoute.Spec.BackendRefs {
 		ref := &mcpRoute.Spec.BackendRefs[i]
 		name := mcpPerBackendRefHTTPRouteName(mcpRoute.Name, ref.Name)
-		var httpRoute *gwapiv1.HTTPRoute
-		httpRoute, existing, err = c.getOrNewHTTPRouteRoute(ctx, mcpRoute, name)
-		if err != nil {
-			return fmt.Errorf("failed to get or create HTTPRoute: %w", err)
+		httpRoute, existing := existingPerBackendRoutes[name]
+		if !existing {
+			httpRoute, err = c.newHTTPRoute(mcpRoute, name)
+			if err != nil {
+				return fmt.Errorf("failed to construct a new HTTPRoute for backend %s: %w", ref.Name, err)
+			}
 		}
 		if err = c.newPerBackendRefHTTPRoute(ctx, httpRoute, mcpRoute, ref); err != nil {
 			return fmt.Errorf("failed to construct a new HTTPRoute for backend %s: %w", ref.Name, err)
@@ -132,6 +137,11 @@ func (c *MCPRouteController) syncMCPRoute(ctx context.Context, mcpRoute *aigv1a1
 		if err = c.createOrUpdateHTTPRoute(ctx, httpRoute, existing); err != nil {
 			return fmt.Errorf("failed to create or update HTTPRoute for backend %s: %w", ref.Name, err)
 		}
+		delete(existingPerBackendRoutes, name)
+	}
+
+	if err = c.deleteOrphanedPerBackendResources(ctx, mcpRoute, existingPerBackendRoutes); err != nil {
+		return fmt.Errorf("failed to delete orphaned per-backend resources: %w", err)
 	}
 
 	// Reconciles MCPRouteSecurityPolicy and creates/updates its associated envoy gateway resources.
@@ -165,33 +175,15 @@ func (c *MCPRouteController) createOrUpdateHTTPRoute(ctx context.Context, httpRo
 	return nil
 }
 
-func (c *MCPRouteController) getOrNewHTTPRouteRoute(ctx context.Context, mcpRoute *aigv1a1.MCPRoute, routeName string) (*gwapiv1.HTTPRoute, bool, error) {
+func (c *MCPRouteController) getOrNewHTTPRouteRoute(ctx context.Context, mcpRoute *aigv1b1.MCPRoute, routeName string) (*gwapiv1.HTTPRoute, bool, error) {
 	httpRoute := &gwapiv1.HTTPRoute{}
 	err := c.client.Get(ctx, client.ObjectKey{Name: routeName, Namespace: mcpRoute.Namespace}, httpRoute)
 	existing := err == nil
 	if apierrors.IsNotFound(err) {
 		// This means that this MCPRoute is a new one.
-		httpRoute = &gwapiv1.HTTPRoute{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        routeName,
-				Namespace:   mcpRoute.Namespace,
-				Labels:      make(map[string]string),
-				Annotations: make(map[string]string),
-			},
-			Spec: gwapiv1.HTTPRouteSpec{},
-		}
-
-		// Copy labels from MCPRoute to HTTPRoute.
-		for k, v := range mcpRoute.Labels {
-			httpRoute.Labels[k] = v
-		}
-
-		// Copy non-controller annotations from MCPRoute to HTTPRoute.
-		for k, v := range mcpRoute.Annotations {
-			httpRoute.Annotations[k] = v
-		}
-		if err = ctrlutil.SetControllerReference(mcpRoute, httpRoute, c.client.Scheme()); err != nil {
-			return nil, false, fmt.Errorf("failed to set controller reference for HTTPRoute: %w", err)
+		httpRoute, err = c.newHTTPRoute(mcpRoute, routeName)
+		if err != nil {
+			return nil, false, err
 		}
 	} else if err != nil {
 		return nil, false, fmt.Errorf("failed to get HTTPRoute: %w", err)
@@ -199,8 +191,71 @@ func (c *MCPRouteController) getOrNewHTTPRouteRoute(ctx context.Context, mcpRout
 	return httpRoute, existing, nil
 }
 
+func (c *MCPRouteController) newHTTPRoute(mcpRoute *aigv1b1.MCPRoute, routeName string) (*gwapiv1.HTTPRoute, error) {
+	httpRoute := &gwapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        routeName,
+			Namespace:   mcpRoute.Namespace,
+			Labels:      make(map[string]string),
+			Annotations: make(map[string]string),
+		},
+		Spec: gwapiv1.HTTPRouteSpec{},
+	}
+	// Copy labels from MCPRoute to HTTPRoute.
+	for k, v := range mcpRoute.Labels {
+		httpRoute.Labels[k] = v
+	}
+	// Copy non-controller annotations from MCPRoute to HTTPRoute.
+	for k, v := range mcpRoute.Annotations {
+		httpRoute.Annotations[k] = v
+	}
+	if err := ctrlutil.SetControllerReference(mcpRoute, httpRoute, c.client.Scheme()); err != nil {
+		return nil, fmt.Errorf("failed to set controller reference for HTTPRoute: %w", err)
+	}
+	return httpRoute, nil
+}
+
+// listExistingPerBackendHTTPRoutes returns a map of name -> HTTPRoute for all per-backend
+// HTTPRoutes currently owned by this MCPRoute.
+func (c *MCPRouteController) listExistingPerBackendHTTPRoutes(ctx context.Context, mcpRoute *aigv1b1.MCPRoute) (map[string]*gwapiv1.HTTPRoute, error) {
+	var ownedRoutes gwapiv1.HTTPRouteList
+	if err := c.client.List(ctx, &ownedRoutes,
+		client.InNamespace(mcpRoute.Namespace),
+		client.MatchingFields{k8sClientIndexMCPRouteToOwnedHTTPRoute: fmt.Sprintf("%s.%s", mcpRoute.Name, mcpRoute.Namespace)},
+	); err != nil {
+		return nil, fmt.Errorf("failed to list owned HTTPRoutes: %w", err)
+	}
+	existing := make(map[string]*gwapiv1.HTTPRoute, len(ownedRoutes.Items))
+	for i := range ownedRoutes.Items {
+		r := &ownedRoutes.Items[i]
+		if strings.HasPrefix(r.Name, internalapi.MCPPerBackendRefHTTPRoutePrefix) {
+			existing[r.Name] = r
+		}
+	}
+	return existing, nil
+}
+
+// deleteOrphanedPerBackendResources deletes per-backend HTTPRoutes and their corresponding
+// HTTPRouteFilters that are no longer referenced by any backendRef in the MCPRoute spec.
+func (c *MCPRouteController) deleteOrphanedPerBackendResources(ctx context.Context, mcpRoute *aigv1b1.MCPRoute, orphaned map[string]*gwapiv1.HTTPRoute) error {
+	for name, route := range orphaned {
+		c.logger.Info("Deleting orphaned per-backend HTTPRoute", "namespace", route.Namespace, "name", name)
+		if err := c.client.Delete(ctx, route); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete orphaned HTTPRoute %s: %w", name, err)
+		}
+
+		filterName := strings.Replace(name, internalapi.MCPPerBackendRefHTTPRoutePrefix, internalapi.MCPPerBackendHTTPRouteFilterPrefix, 1)
+		c.logger.Info("Deleting orphaned per-backend HTTPRouteFilter", "namespace", mcpRoute.Namespace, "name", filterName)
+		filter := &egv1a1.HTTPRouteFilter{ObjectMeta: metav1.ObjectMeta{Name: filterName, Namespace: mcpRoute.Namespace}}
+		if err := c.client.Delete(ctx, filter); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete orphaned HTTPRouteFilter %s: %w", filterName, err)
+		}
+	}
+	return nil
+}
+
 // newMainHTTPRoute updates the main HTTPRoute with the MCPRoute.
-func (c *MCPRouteController) newMainHTTPRoute(dst *gwapiv1.HTTPRoute, mcpRoute *aigv1a1.MCPRoute) error {
+func (c *MCPRouteController) newMainHTTPRoute(dst *gwapiv1.HTTPRoute, mcpRoute *aigv1b1.MCPRoute) error {
 	// This routes incoming MCP client requests to the MCP proxy in the ext proc.
 	servingPath := ptr.Deref(mcpRoute.Spec.Path, defaultMCPPath)
 	rules := []gwapiv1.HTTPRouteRule{{
@@ -362,7 +417,7 @@ func (c *MCPRouteController) newMainHTTPRoute(dst *gwapiv1.HTTPRoute, mcpRoute *
 }
 
 // newPerBackendRefHTTPRoute creates an HTTPRoute for each backend reference in the MCPRoute.
-func (c *MCPRouteController) newPerBackendRefHTTPRoute(ctx context.Context, dst *gwapiv1.HTTPRoute, mcpRoute *aigv1a1.MCPRoute, ref *aigv1a1.MCPRouteBackendRef) error {
+func (c *MCPRouteController) newPerBackendRefHTTPRoute(ctx context.Context, dst *gwapiv1.HTTPRoute, mcpRoute *aigv1b1.MCPRoute, ref *aigv1b1.MCPRouteBackendRef) error {
 	if ns := ref.Namespace; ns != nil && *ns != gwapiv1.Namespace(mcpRoute.Namespace) {
 		// TODO: do this in a CEL or webhook validation or start supporting cross-namespace references with ReferenceGrant.
 		return fmt.Errorf("cross-namespace backend reference is not supported: backend %s/%s in MCPRoute %s/%s",
@@ -399,7 +454,7 @@ func (c *MCPRouteController) newPerBackendRefHTTPRoute(ctx context.Context, dst 
 }
 
 // syncGateways synchronizes the gateways referenced by the MCPRoute by sending events to the gateway controller.
-func (c *MCPRouteController) syncGateways(ctx context.Context, mcpRoute *aigv1a1.MCPRoute) error {
+func (c *MCPRouteController) syncGateways(ctx context.Context, mcpRoute *aigv1b1.MCPRoute) error {
 	for _, p := range mcpRoute.Spec.ParentRefs {
 		gwNamespace := mcpRoute.Namespace
 		if p.Namespace != nil {
@@ -426,7 +481,7 @@ func (c *MCPRouteController) syncGateway(ctx context.Context, namespace, name st
 }
 
 // updateMCPRouteStatus updates the status of the MCPRoute.
-func (c *MCPRouteController) updateMCPRouteStatus(ctx context.Context, route *aigv1a1.MCPRoute, conditionType string, message string) {
+func (c *MCPRouteController) updateMCPRouteStatus(ctx context.Context, route *aigv1b1.MCPRoute, conditionType string, message string) {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := c.client.Get(ctx, client.ObjectKey{Name: route.Name, Namespace: route.Namespace}, route); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -446,7 +501,7 @@ func (c *MCPRouteController) updateMCPRouteStatus(ctx context.Context, route *ai
 // ensureMCPProxyBackend ensures that the MCP proxy Backend resource exists.
 // This Backend is used by the HTTPRoute to route MCP requests to the ext proc MCP proxy.
 // It only creates the Backend once - subsequent calls are no-ops if the Backend already exists.
-func (c *MCPRouteController) ensureMCPProxyBackend(ctx context.Context, mcpRoute *aigv1a1.MCPRoute) error {
+func (c *MCPRouteController) ensureMCPProxyBackend(ctx context.Context, mcpRoute *aigv1b1.MCPRoute) error {
 	name := mcpProxyBackendName(mcpRoute)
 	var backend egv1a1.Backend
 	err := c.client.Get(ctx, client.ObjectKey{Name: name, Namespace: mcpRoute.Namespace}, &backend)
@@ -477,7 +532,7 @@ func (c *MCPRouteController) ensureMCPProxyBackend(ctx context.Context, mcpRoute
 			panic(fmt.Errorf("BUG: failed to set controller reference for MCP proxy Backend: %w", err))
 		}
 
-		c.logger.Info("Creating MCP proxy Backend", "namespace", mcpRoute.Namespace, "name", mcpProxyBackendName)
+		c.logger.Info("Creating MCP proxy Backend", "namespace", mcpRoute.Namespace, "name", name)
 		if err = c.client.Create(ctx, &backend); err != nil {
 			return fmt.Errorf("failed to create MCP proxy Backend: %w", err)
 		}
@@ -486,11 +541,11 @@ func (c *MCPRouteController) ensureMCPProxyBackend(ctx context.Context, mcpRoute
 	return nil
 }
 
-func mcpProxyBackendName(mcpRoute *aigv1a1.MCPRoute) string {
+func mcpProxyBackendName(mcpRoute *aigv1b1.MCPRoute) string {
 	return fmt.Sprintf("%s-%s-mcp-proxy", mcpRoute.Namespace, mcpRoute.Name)
 }
 
-func mcpBackendRefFilterName(mcpRoute *aigv1a1.MCPRoute, backendName gwapiv1.ObjectName) string {
+func mcpBackendRefFilterName(mcpRoute *aigv1b1.MCPRoute, backendName gwapiv1.ObjectName) string {
 	return fmt.Sprintf("%s%s-%s", internalapi.MCPPerBackendHTTPRouteFilterPrefix, mcpRoute.Name, backendName)
 }
 
@@ -498,27 +553,77 @@ func mcpBackendRefFilterName(mcpRoute *aigv1a1.MCPRoute, backendName gwapiv1.Obj
 // The rule routes requests to the specified backend using internalapi.MCPBackendHeader,
 // which is set by the MCP proxy based on its routing logic.
 // This route rule will eventually be moved to the backend listener in the extension server.
-func (c *MCPRouteController) mcpBackendRefToHTTPRouteRule(ctx context.Context, mcpRoute *aigv1a1.MCPRoute, ref *aigv1a1.MCPRouteBackendRef) (gwapiv1.HTTPRouteRule, error) {
-	var apiKey *aigv1a1.MCPBackendAPIKey
-	if ref.SecurityPolicy != nil && ref.SecurityPolicy.APIKey != nil {
-		apiKey = ref.SecurityPolicy.APIKey
-	}
-
+func (c *MCPRouteController) mcpBackendRefToHTTPRouteRule(ctx context.Context, mcpRoute *aigv1b1.MCPRoute, ref *aigv1b1.MCPRouteBackendRef) (gwapiv1.HTTPRouteRule, error) {
 	// Ensure the HTTPRouteFilter for this backend with its optional security configuration.
-	filterName := mcpBackendRefFilterName(mcpRoute, ref.Name)
-	err := c.ensureMCPBackendRefHTTPFilter(ctx, filterName, apiKey, mcpRoute)
+	egFilterName := mcpBackendRefFilterName(mcpRoute, ref.Name)
+	err := c.ensureMCPBackendRefHTTPFilter(ctx, egFilterName, mcpRoute)
 	if err != nil {
 		return gwapiv1.HTTPRouteRule{}, fmt.Errorf("failed to ensure MCP backend API key HTTP filter: %w", err)
 	}
-
-	filters := []gwapiv1.HTTPRouteFilter{{
-		Type: gwapiv1.HTTPRouteFilterExtensionRef,
-		ExtensionRef: &gwapiv1.LocalObjectReference{
-			Group: "gateway.envoyproxy.io",
-			Kind:  "HTTPRouteFilter",
-			Name:  gwapiv1.ObjectName(filterName),
+	filters := []gwapiv1.HTTPRouteFilter{
+		{
+			Type: gwapiv1.HTTPRouteFilterExtensionRef,
+			ExtensionRef: &gwapiv1.LocalObjectReference{
+				Group: "gateway.envoyproxy.io",
+				Kind:  "HTTPRouteFilter",
+				Name:  gwapiv1.ObjectName(egFilterName),
+			},
 		},
-	}}
+	}
+
+	fullPathPtr := ptr.Deref(ref.Path, defaultMCPPath)
+
+	// Add credential injection if apiKey is specified.
+	if ref.SecurityPolicy != nil && ref.SecurityPolicy.APIKey != nil {
+		apiKey := ref.SecurityPolicy.APIKey
+
+		apiKeyLiteral, err := c.readAPIKey(ctx, mcpRoute.Namespace, apiKey)
+		if err != nil {
+			return gwapiv1.HTTPRouteRule{}, fmt.Errorf("failed to read API key for backend %s: %w", ref.Name, err)
+		}
+		switch {
+		case apiKey.QueryParam != nil:
+			fullPathPtr = fmt.Sprintf("%s?%s=%s", fullPathPtr, *apiKey.QueryParam, apiKeyLiteral)
+		case apiKey.Header != nil:
+			header := *apiKey.Header
+			if header == "Authorization" {
+				apiKeyLiteral = "Bearer " + apiKeyLiteral
+			}
+			filters = append(filters,
+				gwapiv1.HTTPRouteFilter{
+					Type: gwapiv1.HTTPRouteFilterRequestHeaderModifier,
+					RequestHeaderModifier: &gwapiv1.HTTPHeaderFilter{
+						Set: []gwapiv1.HTTPHeader{
+							{Name: gwapiv1.HTTPHeaderName(header), Value: apiKeyLiteral},
+						},
+					},
+				},
+			)
+		default:
+			filters = append(filters,
+				gwapiv1.HTTPRouteFilter{
+					Type: gwapiv1.HTTPRouteFilterRequestHeaderModifier,
+					RequestHeaderModifier: &gwapiv1.HTTPHeaderFilter{
+						Set: []gwapiv1.HTTPHeader{
+							{Name: "Authorization", Value: "Bearer " + apiKeyLiteral},
+						},
+					},
+				},
+			)
+		}
+	}
+
+	filters = append(filters,
+		gwapiv1.HTTPRouteFilter{
+			Type: gwapiv1.HTTPRouteFilterURLRewrite,
+			URLRewrite: &gwapiv1.HTTPURLRewriteFilter{
+				Path: &gwapiv1.HTTPPathModifier{
+					Type:            gwapiv1.FullPathHTTPPathModifier,
+					ReplaceFullPath: ptr.To(fullPathPtr),
+				},
+			},
+		},
+	)
 	return gwapiv1.HTTPRouteRule{
 		Matches: []gwapiv1.HTTPRouteMatch{
 			{
@@ -550,12 +655,12 @@ func (c *MCPRouteController) mcpBackendRefToHTTPRouteRule(ctx context.Context, m
 	}, nil
 }
 
-func mcpRouteHeaderValue(mcpRoute *aigv1a1.MCPRoute) string {
+func mcpRouteHeaderValue(mcpRoute *aigv1b1.MCPRoute) string {
 	return fmt.Sprintf("%s/%s", mcpRoute.Namespace, mcpRoute.Name)
 }
 
 // ensureMCPBackendRefHTTPFilter ensures that an HTTPRouteFilter exists for the given backend reference in the MCPRoute.
-func (c *MCPRouteController) ensureMCPBackendRefHTTPFilter(ctx context.Context, filterName string, apiKey *aigv1a1.MCPBackendAPIKey, mcpRoute *aigv1a1.MCPRoute) error {
+func (c *MCPRouteController) ensureMCPBackendRefHTTPFilter(ctx context.Context, filterName string, mcpRoute *aigv1b1.MCPRoute) error {
 	// Rewrite the hostname to the backend service name.
 	// This allows Envoy to route to public MCP services with SNI matching the service name.
 	// This could be a standalone filter and moved to the main mcp gateway route logic.
@@ -575,25 +680,6 @@ func (c *MCPRouteController) ensureMCPBackendRefHTTPFilter(ctx context.Context, 
 	if err := ctrlutil.SetControllerReference(mcpRoute, filter, c.client.Scheme()); err != nil {
 		return fmt.Errorf("failed to set controller reference for HTTPRouteFilter: %w", err)
 	}
-
-	// add credential injection if apiKey is specified.
-	if apiKey != nil {
-		secretName := fmt.Sprintf("%s-credential", filterName)
-		if secretErr := c.ensureCredentialSecret(ctx, mcpRoute.Namespace, secretName, apiKey, mcpRoute); secretErr != nil {
-			return fmt.Errorf("failed to ensure credential secret: %w", secretErr)
-		}
-		header := cmp.Or(ptr.Deref(apiKey.Header, ""), "Authorization")
-		filter.Spec.CredentialInjection = &egv1a1.HTTPCredentialInjectionFilter{
-			Header:    ptr.To(header),
-			Overwrite: ptr.To(true),
-			Credential: egv1a1.InjectedCredential{
-				ValueRef: gwapiv1.SecretObjectReference{
-					Name: gwapiv1.ObjectName(secretName),
-				},
-			},
-		}
-	}
-
 	// Create or Update the HTTPRouteFilter.
 	var existingFilter egv1a1.HTTPRouteFilter
 	err := c.client.Get(ctx, client.ObjectKey{Name: filterName, Namespace: mcpRoute.Namespace}, &existingFilter)
@@ -617,64 +703,19 @@ func (c *MCPRouteController) ensureMCPBackendRefHTTPFilter(ctx context.Context, 
 	return nil
 }
 
-func (c *MCPRouteController) ensureCredentialSecret(ctx context.Context, namespace, secretName string, apiKey *aigv1a1.MCPBackendAPIKey, mcpRoute *aigv1a1.MCPRoute) error {
-	var credentialValue string
+func (c *MCPRouteController) readAPIKey(ctx context.Context, namespace string, apiKey *aigv1b1.MCPBackendAPIKey) (string, error) {
 	key := ptr.Deref(apiKey.Inline, "")
 	if key == "" {
 		secretRef := apiKey.SecretRef
 		secret, err := c.kube.CoreV1().Secrets(namespace).Get(ctx, string(secretRef.Name), metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to get secret for API key: %w", err)
+			return "", fmt.Errorf("failed to get secret for API key: %w", err)
 		}
 		if k, ok := secret.Data["apiKey"]; ok {
 			key = string(k)
 		} else if key, ok = secret.StringData["apiKey"]; !ok {
-			return fmt.Errorf("secret %s/%s does not contain 'apiKey' key", namespace, secretRef.Name)
+			return "", fmt.Errorf("secret %s/%s does not contain 'apiKey' key", namespace, secretRef.Name)
 		}
 	}
-
-	// Only prepend the "Bearer " prefix if the header is not set or is set to "Authorization".
-	header := cmp.Or(ptr.Deref(apiKey.Header, ""), "Authorization")
-	if header == "Authorization" {
-		credentialValue = fmt.Sprintf("Bearer %s", key)
-	} else {
-		credentialValue = key
-	}
-
-	existingSecret, secretErr := c.kube.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
-	if secretErr != nil && !apierrors.IsNotFound(secretErr) {
-		return fmt.Errorf("failed to get credential secret: %w", secretErr)
-	}
-
-	secretData := map[string][]byte{
-		egv1a1.InjectedCredentialKey: []byte(credentialValue),
-	}
-
-	if apierrors.IsNotFound(secretErr) {
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      secretName,
-				Namespace: namespace,
-			},
-			Data: secretData,
-		}
-
-		if mcpRoute != nil {
-			if err := ctrlutil.SetControllerReference(mcpRoute, secret, c.client.Scheme()); err != nil {
-				return fmt.Errorf("failed to set controller reference for credential secret: %w", err)
-			}
-		}
-
-		c.logger.Info("Creating credential secret", "namespace", namespace, "name", secretName)
-		if _, err := c.kube.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("failed to create credential secret: %w", err)
-		}
-	} else if existingSecret.Data == nil || string(existingSecret.Data[egv1a1.InjectedCredentialKey]) != credentialValue {
-		existingSecret.Data = secretData
-		c.logger.Info("Updating credential secret", "namespace", namespace, "name", secretName)
-		if _, err := c.kube.CoreV1().Secrets(namespace).Update(ctx, existingSecret, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("failed to update credential secret: %w", secretErr)
-		}
-	}
-	return nil
+	return key, nil
 }

@@ -125,13 +125,13 @@ func (o *openAIToOpenAITranslatorV1Responses) handleNonStreamingResponse(body io
 	// Fallback to request model for test or non-compliant OpenAI backends
 	responseModel = cmp.Or(resp.Model, o.requestModel)
 
-	// TODO: Add reasoning token usage
 	if resp.Usage != nil {
 		tokenUsage.SetInputTokens(uint32(resp.Usage.InputTokens))                                         // #nosec G115
 		tokenUsage.SetOutputTokens(uint32(resp.Usage.OutputTokens))                                       // #nosec G115
 		tokenUsage.SetTotalTokens(uint32(resp.Usage.TotalTokens))                                         // #nosec G115
 		tokenUsage.SetCachedInputTokens(uint32(resp.Usage.InputTokensDetails.CachedTokens))               // #nosec G115
 		tokenUsage.SetCacheCreationInputTokens(uint32(resp.Usage.InputTokensDetails.CacheCreationTokens)) // #nosec G115
+		tokenUsage.SetReasoningTokens(uint32(resp.Usage.OutputTokensDetails.ReasoningTokens))             // #nosec G115
 	}
 
 	// Record non-streaming response to span if tracing is enabled.
@@ -163,23 +163,24 @@ func (o *openAIToOpenAITranslatorV1Responses) extractUsageFromBufferEvent(span t
 				continue // skip invalid JSON
 			}
 
-			switch eventUnion.Type {
+			switch eventUnion.GetEventType() {
 			case "response.created":
 				// Extract model from the first streaming event.
-				respCreatedEvent := eventUnion.AsResponseCreated()
+				respCreatedEvent := eventUnion.OfResponseCreated
 				if respCreatedEvent.Response.Model != "" {
 					o.streamingResponseModel = respCreatedEvent.Response.Model
 				}
 			case "response.completed":
 				// Extract token usage from response.completed event.
 				// Only response.completed contains usage information.
-				respComplEvent := eventUnion.AsResponseCompleted()
+				respComplEvent := eventUnion.OfResponseCompleted
 				tokenUsage.SetInputTokens(uint32(respComplEvent.Response.Usage.InputTokens))                           // #nosec G115
 				tokenUsage.SetOutputTokens(uint32(respComplEvent.Response.Usage.OutputTokens))                         // #nosec G115
 				tokenUsage.SetTotalTokens(uint32(respComplEvent.Response.Usage.TotalTokens))                           // #nosec G115
 				tokenUsage.SetCachedInputTokens(uint32(respComplEvent.Response.Usage.InputTokensDetails.CachedTokens)) // #nosec G115
 				// Openai does not support cache creation response.
-				tokenUsage.SetCacheCreationInputTokens(uint32(0)) // #nosec G115
+				tokenUsage.SetCacheCreationInputTokens(uint32(0))                                                        // #nosec G115
+				tokenUsage.SetReasoningTokens(uint32(respComplEvent.Response.Usage.OutputTokensDetails.ReasoningTokens)) // #nosec G115
 			}
 			// Record streaming chunk to span if tracing is enabled.
 			if span != nil {

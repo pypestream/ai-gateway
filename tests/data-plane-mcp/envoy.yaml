@@ -31,6 +31,7 @@ static_resources:
                           session.id: "%DYNAMIC_METADATA(io.envoy.ai_gateway:session.id)%"
                           mcp.provider.name: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_backend)%"
                           mcp.method.name: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_method)%"
+                          mcp.tool.name: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_tool_name)%"
                           jsonrpc.request.id: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_request_id)%"
                           method: "%REQ(:METHOD)%"
                           request.path: "%REQ(:PATH)%"
@@ -101,6 +102,7 @@ static_resources:
                           session.id: "%DYNAMIC_METADATA(io.envoy.ai_gateway:session.id)%"
                           mcp.provider.name: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_backend)%"
                           mcp.method.name: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_method)%"
+                          mcp.tool.name: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_tool_name)%"
                           jsonrpc.request.id: "%DYNAMIC_METADATA(io.envoy.ai_gateway:mcp_request_id)%"
                           method: "%REQ(:METHOD)%"
                           request.path: "%REQ(:PATH)%"
@@ -128,6 +130,7 @@ static_resources:
                             cluster: dumb-mcp-backend
                             idleTimeout: 3600s
                             timeout: 120s
+                            pathRewrite: /mcp
                         - match:
                             prefix: "/"
                             headers:
@@ -138,6 +141,7 @@ static_resources:
                             cluster: default-mcp-backend
                             idleTimeout: 3600s
                             timeout: 120s
+                            pathRewrite: /mcp
                         - match:
                             prefix: "/"
                             headers:
@@ -148,6 +152,7 @@ static_resources:
                             autoHostRewrite: true
                             cluster: context7
                             idleTimeout: 3600s
+                            pathRewrite: /mcp
                             timeout: 120s
                         - match:
                             prefix: "/"
@@ -159,6 +164,7 @@ static_resources:
                             autoHostRewrite: true
                             cluster: github
                             idleTimeout: 3600s
+                            pathRewrite: /mcp/readonly
                             timeout: 120s
                           request_headers_to_add:
                             - header:
@@ -174,6 +180,7 @@ static_resources:
                             autoHostRewrite: true
                             cluster: kiwi
                             idleTimeout: 3600s
+                            pathRewrite: /
                             timeout: 120s
                 http_filters:
                   - name: envoy.filters.http.header_to_metadata
@@ -190,6 +197,12 @@ static_resources:
                           on_header_present:
                             metadata_namespace: io.envoy.ai_gateway
                             key: mcp_method
+                            type: STRING
+                          remove: true
+                        - header: x-ai-eg-mcp-metadata-tool-name
+                          on_header_present:
+                            metadata_namespace: io.envoy.ai_gateway
+                            key: mcp_tool_name
                             type: STRING
                           remove: true
                         - header: x-ai-eg-mcp-metadata-request-id

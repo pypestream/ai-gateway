@@ -43,6 +43,36 @@ func Test_toolSelector_Allows(t *testing.T) {
 			tools:    []string{"bar", "foo"},
 			expected: []bool{true, false},
 		},
+		{
+			name:     "exclude specific tool",
+			selector: toolSelector{exclude: map[string]struct{}{"foo": {}}},
+			tools:    []string{"foo", "bar"},
+			expected: []bool{false, true},
+		},
+		{
+			name:     "exclude regexp",
+			selector: toolSelector{excludeRegexps: []*regexp.Regexp{reBa}},
+			tools:    []string{"bar", "foo"},
+			expected: []bool{false, true},
+		},
+		{
+			name: "include + exclude where exclude wins",
+			selector: toolSelector{
+				include: map[string]struct{}{"foo": {}, "bar": {}},
+				exclude: map[string]struct{}{"bar": {}},
+			},
+			tools:    []string{"foo", "bar", "baz"},
+			expected: []bool{true, false, false},
+		},
+		{
+			name: "include + excludeRegex where exclude wins",
+			selector: toolSelector{
+				include:        map[string]struct{}{"foo": {}, "bar": {}},
+				excludeRegexps: []*regexp.Regexp{reBa},
+			},
+			tools:    []string{"foo", "bar", "baz"},
+			expected: []bool{true, false, false},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,9 +107,9 @@ func TestLoadConfig_BasicConfiguration(t *testing.T) {
 				{
 					Name: "route1",
 					Backends: []filterapi.MCPBackend{
-						{Name: "backend1", Path: "/mcp1"},
+						{Name: "backend1"},
 						{
-							Name: "backend2", Path: "/mcp2",
+							Name: "backend2",
 							ToolSelector: &filterapi.MCPToolSelector{
 								Include:      []string{"tool1", "tool2"},
 								IncludeRegex: []string{"^test.*"},
@@ -90,8 +120,8 @@ func TestLoadConfig_BasicConfiguration(t *testing.T) {
 				{
 					Name: "route2",
 					Backends: []filterapi.MCPBackend{
-						{Name: "backend3", Path: "/mcp3"},
-						{Name: "backend4", Path: "/mcp4"},
+						{Name: "backend3"},
+						{Name: "backend4"},
 					},
 				},
 			},
@@ -130,7 +160,7 @@ func TestLoadConfig_ToolsChangedNotification(t *testing.T) {
 			routes: map[filterapi.MCPRouteName]*mcpProxyConfigRoute{
 				"route1": {
 					backends: map[filterapi.MCPBackendName]filterapi.MCPBackend{
-						"backend1": {Name: "backend1", Path: "/mcp1"},
+						"backend1": {Name: "backend1"},
 					},
 					toolSelectors: map[filterapi.MCPBackendName]*toolSelector{},
 				},
@@ -147,8 +177,8 @@ func TestLoadConfig_ToolsChangedNotification(t *testing.T) {
 				{
 					Name: "route1",
 					Backends: []filterapi.MCPBackend{
-						{Name: "backend1", Path: "/mcp1"},
-						{Name: "backend2", Path: "/mcp2"}, // Added backend
+						{Name: "backend1"},
+						{Name: "backend2"}, // Added backend
 					},
 				},
 			},
@@ -178,7 +208,7 @@ func TestLoadConfig_NoToolsChangedNotification(t *testing.T) {
 			routes: map[filterapi.MCPRouteName]*mcpProxyConfigRoute{
 				"route1": {
 					backends: map[filterapi.MCPBackendName]filterapi.MCPBackend{
-						"backend1": {Name: "backend1", Path: "/mcp1"},
+						"backend1": {Name: "backend1"},
 					},
 					toolSelectors: map[filterapi.MCPBackendName]*toolSelector{},
 				},
@@ -195,7 +225,7 @@ func TestLoadConfig_NoToolsChangedNotification(t *testing.T) {
 				{
 					Name: "route1",
 					Backends: []filterapi.MCPBackend{
-						{Name: "backend1", Path: "/mcp1"}, // Same backend
+						{Name: "backend1"}, // Same backend
 					},
 				},
 			},
@@ -214,6 +244,48 @@ func TestLoadConfig_NoToolsChangedNotification(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_ExcludeConfiguration(t *testing.T) {
+	proxy := &ProxyConfig{
+		mcpProxyConfig:     &mcpProxyConfig{},
+		toolChangeSignaler: newMultiWatcherSignaler(),
+	}
+
+	config := &filterapi.Config{
+		MCPConfig: &filterapi.MCPConfig{
+			BackendListenerAddr: "http://localhost:8080",
+			Routes: []filterapi.MCPRoute{
+				{
+					Name: "route1",
+					Backends: []filterapi.MCPBackend{
+						{
+							Name: "backend1",
+							ToolSelector: &filterapi.MCPToolSelector{
+								Include:      []string{"tool1", "tool2", "tool3"},
+								Exclude:      []string{"tool3"},
+								ExcludeRegex: []string{"^secret.*"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := proxy.LoadConfig(t.Context(), config)
+	require.NoError(t, err)
+	selector := proxy.routes["route1"].toolSelectors["backend1"]
+	require.NotNil(t, selector)
+	require.Contains(t, selector.include, "tool1")
+	require.Contains(t, selector.include, "tool2")
+	require.Contains(t, selector.include, "tool3")
+	require.Contains(t, selector.exclude, "tool3")
+	require.Len(t, selector.excludeRegexps, 1)
+	require.True(t, selector.allows("tool1"))
+	require.True(t, selector.allows("tool2"))
+	require.False(t, selector.allows("tool3"))       // excluded by exact match
+	require.False(t, selector.allows("secret_tool")) // excluded by regex
+}
+
 func TestLoadConfig_InvalidRegex(t *testing.T) {
 	proxy := &ProxyConfig{
 		mcpProxyConfig:     &mcpProxyConfig{},
@@ -229,7 +301,6 @@ func TestLoadConfig_InvalidRegex(t *testing.T) {
 					Backends: []filterapi.MCPBackend{
 						{
 							Name: "backend1",
-							Path: "/mcp1",
 							ToolSelector: &filterapi.MCPToolSelector{
 								IncludeRegex: []string{"[invalid"}, // Invalid regex
 							},
@@ -245,6 +316,36 @@ func TestLoadConfig_InvalidRegex(t *testing.T) {
 	require.Contains(t, err.Error(), "failed to compile include regex")
 }
 
+func TestLoadConfig_InvalidExcludeRegex(t *testing.T) {
+	proxy := &ProxyConfig{
+		mcpProxyConfig:     &mcpProxyConfig{},
+		toolChangeSignaler: newMultiWatcherSignaler(),
+	}
+
+	config := &filterapi.Config{
+		MCPConfig: &filterapi.MCPConfig{
+			BackendListenerAddr: "http://localhost:8080",
+			Routes: []filterapi.MCPRoute{
+				{
+					Name: "route1",
+					Backends: []filterapi.MCPBackend{
+						{
+							Name: "backend1",
+							ToolSelector: &filterapi.MCPToolSelector{
+								ExcludeRegex: []string{"[invalid"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := proxy.LoadConfig(t.Context(), config)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to compile exclude regex")
+}
+
 func TestLoadConfig_ToolSelectorChange(t *testing.T) {
 	toolChangeSignaler := newMultiWatcherSignaler()
 	watcher := toolChangeSignaler.Watch()
@@ -256,7 +357,7 @@ func TestLoadConfig_ToolSelectorChange(t *testing.T) {
 			routes: map[filterapi.MCPRouteName]*mcpProxyConfigRoute{
 				"route1": {
 					backends: map[filterapi.MCPBackendName]filterapi.MCPBackend{
-						"backend1": {Name: "backend1", Path: "/mcp1"},
+						"backend1": {Name: "backend1"},
 					},
 					toolSelectors: map[filterapi.MCPBackendName]*toolSelector{
 						"backend1": {
@@ -279,7 +380,6 @@ func TestLoadConfig_ToolSelectorChange(t *testing.T) {
 					Backends: []filterapi.MCPBackend{
 						{
 							Name: "backend1",
-							Path: "/mcp1",
 							ToolSelector: &filterapi.MCPToolSelector{
 								Include: []string{"tool1", "tool2"}, // Different tools
 							},
@@ -315,11 +415,11 @@ func TestLoadConfig_ToolOrderDoesNotMatter(t *testing.T) {
 	// Initialize proxy with initial configuration directly
 	proxy := &ProxyConfig{
 		mcpProxyConfig: &mcpProxyConfig{
-			backendListenerAddr: "http://localhost:8080",
+			backendListenerAddr: "http://localhost:8080/",
 			routes: map[filterapi.MCPRouteName]*mcpProxyConfigRoute{
 				"route1": {
 					backends: map[filterapi.MCPBackendName]filterapi.MCPBackend{
-						"backend1": {Name: "backend1", Path: "/mcp1"},
+						"backend1": {Name: "backend1"},
 					},
 					toolSelectors: map[filterapi.MCPBackendName]*toolSelector{
 						"backend1": {
@@ -351,7 +451,6 @@ func TestLoadConfig_ToolOrderDoesNotMatter(t *testing.T) {
 					Backends: []filterapi.MCPBackend{
 						{
 							Name: "backend1",
-							Path: "/mcp1",
 							ToolSelector: &filterapi.MCPToolSelector{
 								Include:      []string{"tool-c", "tool-a", "tool-b"},        // Different order
 								IncludeRegex: []string{"^exact$", ".*suffix$", "^prefix.*"}, // Different order
@@ -383,4 +482,63 @@ func TestLoadConfig_ToolOrderDoesNotMatter(t *testing.T) {
 	require.Contains(t, selector.include, "tool-b")
 	require.Contains(t, selector.include, "tool-c")
 	require.Len(t, selector.includeRegexps, 3)
+}
+
+func Test_toolSelector_sameTools(t *testing.T) {
+	reA := regexp.MustCompile("^a.*")
+	reB := regexp.MustCompile("^b.*")
+
+	tests := []struct {
+		name     string
+		a, b     *toolSelector
+		expected bool
+	}{
+		{
+			name:     "both nil",
+			a:        nil,
+			b:        nil,
+			expected: true,
+		},
+		{
+			name:     "one nil",
+			a:        &toolSelector{},
+			b:        nil,
+			expected: false,
+		},
+		{
+			name:     "same empty",
+			a:        &toolSelector{},
+			b:        &toolSelector{},
+			expected: true,
+		},
+		{
+			name:     "different exclude keys",
+			a:        &toolSelector{exclude: map[string]struct{}{"foo": {}}},
+			b:        &toolSelector{exclude: map[string]struct{}{"bar": {}}},
+			expected: false,
+		},
+		{
+			name:     "different include regexps",
+			a:        &toolSelector{includeRegexps: []*regexp.Regexp{reA}},
+			b:        &toolSelector{includeRegexps: []*regexp.Regexp{reB}},
+			expected: false,
+		},
+		{
+			name:     "same exclude regexps different order",
+			a:        &toolSelector{excludeRegexps: []*regexp.Regexp{reA, reB}},
+			b:        &toolSelector{excludeRegexps: []*regexp.Regexp{reB, reA}},
+			expected: true,
+		},
+		{
+			name:     "different exclude regexps",
+			a:        &toolSelector{excludeRegexps: []*regexp.Regexp{reA}},
+			b:        &toolSelector{excludeRegexps: []*regexp.Regexp{reB}},
+			expected: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.a.sameTools(tt.b))
+		})
+	}
 }

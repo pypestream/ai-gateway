@@ -30,6 +30,7 @@ const (
 	GenAIOperationMessages        GenAIOperation = "messages"
 	GenAIOperationImageGeneration GenAIOperation = "image_generation"
 	GenAIOperationResponses       GenAIOperation = "responses"
+	GenAIOperationSpeech          GenAIOperation = "speech"
 	GenAIOperationRerank          GenAIOperation = "rerank"
 
 	// Provider names according to the Semantic Conventions for Generative AI Metrics.
@@ -51,6 +52,7 @@ const (
 	// However, the spec says "a custom value MAY be used.", so we can use it now.
 	genaiTokenTypeCachedInput        = "cached_input"
 	genaiTokenTypeCacheCreationInput = "cache_creation_input"
+	genaiTokenTypeReasoning          = "reasoning"
 	genaiErrorTypeFallback           = "_OTHER"
 )
 

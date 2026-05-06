@@ -52,7 +52,7 @@ func TestMCP(t *testing.T) {
 	})
 	t.Run("tenant route with another path suffix", func(t *testing.T) {
 		testMCPRouteTools(t.Context(), t, client, fwd.Address(), "/mcp/another", []string{
-			"mcp-backend__sum",
+			"mcp-backend-query-api-key__sum",
 		}, nil, false, true)
 	})
 	t.Run("tenant route with different path", func(t *testing.T) {
@@ -203,7 +203,7 @@ spec:
 	})
 
 	const mcpRouteTemplate = `
-apiVersion: aigateway.envoyproxy.io/v1alpha1
+apiVersion: aigateway.envoyproxy.io/v1beta1
 kind: MCPRoute
 metadata:
   name: mcp-with-many-backends

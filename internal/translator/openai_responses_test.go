@@ -11,9 +11,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/openai/openai-go/v2/packages/param"
-	"github.com/openai/openai-go/v2/responses"
 	"github.com/stretchr/testify/require"
+	"k8s.io/utils/ptr"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/json"
@@ -53,8 +52,8 @@ func TestResponsesOpenAIToOpenAITranslator_RequestBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi"}`)
@@ -76,8 +75,8 @@ func TestResponsesOpenAIToOpenAITranslator_RequestBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: true,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","stream":true,"input":"Hi"}`)
@@ -96,8 +95,8 @@ func TestResponsesOpenAIToOpenAITranslator_RequestBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi"}`)
@@ -124,8 +123,8 @@ func TestResponsesOpenAIToOpenAITranslator_RequestBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o", "input":"Hi"}`)
@@ -145,8 +144,8 @@ func TestResponsesOpenAIToOpenAITranslator_RequestBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 
@@ -182,8 +181,8 @@ func TestResponsesOpenAIToOpenAITranslator_ResponseBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi"}`)
@@ -250,6 +249,70 @@ func TestResponsesOpenAIToOpenAITranslator_ResponseBody(t *testing.T) {
 		cacheCreationTokens, ok := tokenUsage.CacheCreationInputTokens()
 		require.True(t, ok)
 		require.Equal(t, uint32(0), cacheCreationTokens)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(0), reasoningTokens)
+	})
+
+	t.Run("non-streaming response with reasoning tokens", func(t *testing.T) {
+		translator := NewResponsesOpenAIToOpenAITranslator("v1", "").(*openAIToOpenAITranslatorV1Responses)
+
+		req := &openai.ResponseRequest{
+			Model:  "o1",
+			Stream: false,
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
+			},
+		}
+		original := []byte(`{"model":"o1","input":"Hi"}`)
+		_, _, err := translator.RequestBody(original, req, false)
+		require.NoError(t, err)
+
+		respJSON := []byte(`{
+			"id": "resp_123",
+			"object": "response",
+			"created_at": 1741476542,
+			"status": "completed",
+			"model": "o1-2024-12-17",
+			"output": [
+				{
+					"type": "message",
+					"id": "msg_123",
+					"status": "completed",
+					"role": "assistant",
+					"content": [
+						{
+							"type": "output_text",
+							"text": "Hello!"
+						}
+					]
+				}
+			],
+			"usage": {
+				"input_tokens": 10,
+				"input_tokens_details": {
+					"cached_tokens": 0
+				},
+				"output_tokens": 25,
+				"output_tokens_details": {
+					"reasoning_tokens": 15
+				},
+				"total_tokens": 35
+			}
+		}`)
+
+		_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader(respJSON), false, nil)
+		require.NoError(t, err)
+		require.Equal(t, "o1-2024-12-17", responseModel)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(15), reasoningTokens)
+
+		outputTokens, ok := tokenUsage.OutputTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(25), outputTokens)
 	})
 
 	t.Run("non-streaming response with fallback model", func(t *testing.T) {
@@ -258,8 +321,8 @@ func TestResponsesOpenAIToOpenAITranslator_ResponseBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi"}`)
@@ -314,8 +377,8 @@ func TestResponsesOpenAIToOpenAITranslator_ResponseBody(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: true,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi","stream":true}`)
@@ -366,6 +429,45 @@ data: [DONE]
 		cacheCreationTokens, ok := tokenUsage.CacheCreationInputTokens()
 		require.True(t, ok)
 		require.Equal(t, uint32(0), cacheCreationTokens)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(0), reasoningTokens)
+	})
+
+	t.Run("streaming response with reasoning tokens", func(t *testing.T) {
+		translator := NewResponsesOpenAIToOpenAITranslator("v1", "").(*openAIToOpenAITranslatorV1Responses)
+
+		req := &openai.ResponseRequest{
+			Model:  "o1",
+			Stream: true,
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
+			},
+		}
+		original := []byte(`{"model":"o1","input":"Hi","stream":true}`)
+		_, _, err := translator.RequestBody(original, req, false)
+		require.NoError(t, err)
+		require.True(t, translator.stream)
+
+		sseChunks := `data: {"type":"response.created","response":{"model":"o1-2024-12-17"}}
+
+data: {"type":"response.completed","response":{"id":"resp_123","object":"response","created_at":1741476542,"status":"completed","model":"o1-2024-12-17","output":[{"type":"message","id":"msg_123","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello!"}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0},"output_tokens":25,"output_tokens_details":{"reasoning_tokens":15},"total_tokens":35}}}
+
+data: [DONE]
+
+`
+		_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader([]byte(sseChunks)), true, nil)
+		require.NoError(t, err)
+		require.Equal(t, "o1-2024-12-17", responseModel)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(15), reasoningTokens)
+
+		outputTokens, ok := tokenUsage.OutputTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(25), outputTokens)
 	})
 
 	t.Run("streaming response with fallback model", func(t *testing.T) {
@@ -374,8 +476,8 @@ data: [DONE]
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o-mini",
 			Stream: true,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o-mini","input":"Hi","stream": true}`)
@@ -419,15 +521,15 @@ func TestResponses_HandleStreamingResponse(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: true,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi","stream":true}`)
 		_, _, err := translator.RequestBody(original, req, false)
 		require.NoError(t, err)
 
-		sseChunks := `data: {"type":"response.created","response":{"model":"gpt-4o-2024-11-20"}}
+		sseChunks := `data: {"type":"response.created","response":{"id":"resp_67c9fdcecf488190bdd9a0409de3a1ec07b8b0ad4e5eb654","object":"response","created_at":1741487325,"status":"in_progress","model":"gpt-4o-2024-11-20","output":[],"parallel_tool_calls":true,"store":true,"temperature":1.0,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[],"top_p":1.0,"truncation":"disabled"},"sequence_number": 1}
 
 data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_67c9fdcf37fc8190ba82116e33fb28c507b8b0ad4e5eb654","type":"message","status":"in_progress","role":"assistant","content":[]}}
 
@@ -465,6 +567,10 @@ data: [DONE]
 		cacheCreationTokens, ok := tokenUsage.CacheCreationInputTokens()
 		require.True(t, ok)
 		require.Equal(t, uint32(0), cacheCreationTokens)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(0), reasoningTokens)
 	})
 
 	t.Run("streaming read error", func(t *testing.T) {
@@ -473,8 +579,8 @@ data: [DONE]
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: true,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi","stream":true}`)
@@ -497,8 +603,8 @@ func TestResponses_HandleNonStreamingResponse(t *testing.T) {
 		req := &openai.ResponseRequest{
 			Model:  "gpt-4o",
 			Stream: false,
-			Input: responses.ResponseNewParamsInputUnion{
-				OfString: param.Opt[string]{Value: "Hi"},
+			Input: openai.ResponseNewParamsInputUnion{
+				OfString: ptr.To("Hi"),
 			},
 		}
 		original := []byte(`{"model":"gpt-4o","input":"Hi"`)
@@ -557,6 +663,10 @@ func TestResponses_HandleNonStreamingResponse(t *testing.T) {
 		cacheCreationTokens, ok := tokenUsage.CacheCreationInputTokens()
 		require.True(t, ok)
 		require.Equal(t, uint32(0), cacheCreationTokens)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(0), reasoningTokens)
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
@@ -622,6 +732,10 @@ data: [DONE]
 		cacheCreationTokens, ok := tokenUsage.CacheCreationInputTokens()
 		require.True(t, ok)
 		require.Equal(t, uint32(0), cacheCreationTokens)
+
+		reasoningTokens, ok := tokenUsage.ReasoningTokens()
+		require.True(t, ok)
+		require.Equal(t, uint32(0), reasoningTokens)
 	})
 
 	t.Run("model extraction", func(t *testing.T) {
@@ -788,6 +902,7 @@ func TestResponsesOpenAIToOpenAITranslatorWithModelOverride(t *testing.T) {
 				OutputTokens: 5,
 				TotalTokens:  15,
 			},
+			Text: openai.ResponseTextConfig{Format: openai.ResponseFormatTextConfigUnionParam{OfText: &openai.ResponseFormatTextParam{Type: "text"}}},
 		}
 
 		body, err := json.Marshal(resp)

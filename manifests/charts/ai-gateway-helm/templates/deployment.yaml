@@ -29,6 +29,10 @@ spec:
         {{- . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "ai-gateway-helm.controller.serviceAccountName" . }}
+      hostNetwork: {{ .Values.controller.hostNetwork }}
+      {{- if .Values.controller.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       securityContext:
         {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
       containers:
@@ -38,14 +42,17 @@ spec:
           image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.controller.imagePullPolicy }}
           ports:
-            - containerPort: 9443
-            - containerPort: 1063
-            - containerPort: 9090
+            {{- range .Values.controller.service.ports }}
+            - containerPort: {{ .targetPort }}
+            {{- end }}
           args:
             - -logLevel={{ .Values.controller.logLevel }}
             - --extProcImage={{ .Values.extProc.image.repository }}:{{ .Values.extProc.image.tag | default .Chart.AppVersion }}
             - --extProcImagePullPolicy={{ .Values.extProc.imagePullPolicy }}
             - --extProcLogLevel={{ .Values.extProc.logLevel }}
+            {{- if .Values.extProc.enableRedaction }}
+            - --extProcEnableRedaction=true
+            {{- end }}
             {{- with (include "ai-gateway-helm.extProc.imagePullSecretsString" .) }}
             - --extProcImagePullSecrets={{ . }}
             {{- end }}
@@ -75,7 +82,7 @@ spec:
               {{- $endpointPrefixes = append $endpointPrefixes (printf "anthropic:%s" $anthropic) -}}
             {{- end -}}
             {{- if $endpointPrefixes }}
-            - --endpointPrefixes={{ join "," $endpointPrefixes }}
+            - "--endpointPrefixes={{ join "," $endpointPrefixes }}"
             {{- end }}
             {{- if .Values.extProc.extraEnvVars }}
             - --extProcExtraEnvVars={{ include "ai-gateway-helm.extProc.envVarsString" . }}
@@ -83,6 +90,7 @@ spec:
             - --tlsCertDir=/certs
             - --tlsCertName={{ .Values.controller.mutatingWebhook.tlsCertName }}
             - --tlsKeyName={{ .Values.controller.mutatingWebhook.tlsKeyName }}
+            - --webhookPort={{ .Values.controller.mutatingWebhook.port }}
             {{- if .Values.controller.leaderElection.enabled }}
             - --enableLeaderElection=true
             {{- end }}

@@ -22,11 +22,12 @@ var configTemplate string
 // Backend represents a network backend endpoint (OpenAI or MCP server).
 // Backends are rendered as Kubernetes Backend resources with optional TLS policy.
 type Backend struct {
-	Name     string // Backend resource name (e.g., "openai", "github")
-	Hostname string // Hostname for Backend endpoint (FQDN only)
-	IP       string // IP address for Backend endpoint (IPv4/IPv6 literal)
-	Port     int    // Port number
-	NeedsTLS bool   // Whether to generate BackendTLSPolicy resource
+	Name        string // Backend resource name (e.g., "openai", "github")
+	Hostname    string // Hostname for Backend endpoint (FQDN only)
+	IP          string // IP address for Backend endpoint (IPv4/IPv6 literal)
+	Port        int    // Port number
+	NeedsTLS    bool   // Whether TLS is required for this backend.
+	IsTelemetry bool   // Whether this is a telemetry backend (e.g., OTLP collector).
 }
 
 // OpenAIConfig holds OpenAI-specific configuration for generating AIServiceBackend resources.
@@ -60,12 +61,13 @@ type MCPBackendRef struct {
 // ConfigData holds all template data for generating the AI Gateway configuration.
 // It supports OpenAI-only, Anthropic-only, MCP-only, or combined configurations.
 type ConfigData struct {
-	Backends       []Backend        // All backend endpoints (unified - includes OpenAI, Anthropic, and MCP backends)
+	Backends       []Backend        // All backend endpoints (e.g. OpenAI, Anthropic, MCP, and OTEL)
 	OpenAI         *OpenAIConfig    // OpenAI-specific configuration (nil when not present)
 	Anthropic      *AnthropicConfig // Anthropic-specific configuration (nil when not present)
 	MCPBackendRefs []MCPBackendRef  // MCP routing configuration (nil/empty for OpenAI-only or Anthropic-only mode)
 	Debug          bool             // Enable debug logging for Envoy (includes component-level logging for ext_proc, http, connection)
 	EnvoyVersion   string           // Explicitly configure the version of Envoy to use.
+	OTELLog        *otelLogConfig   // OpenTelemetry access log configuration (nil => file sink).
 }
 
 // WriteConfig generates the AI Gateway configuration.

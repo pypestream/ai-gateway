@@ -21,6 +21,7 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[-1:].type`
+// +kubebuilder:deprecatedversion:warning="aigateway.envoyproxy.io/v1alpha1 is deprecated; use aigateway.envoyproxy.io/v1beta1 instead"
 type MCPRoute struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -97,7 +98,7 @@ type MCPRouteSpec struct {
 type MCPRouteBackendRef struct {
 	gwapiv1.BackendObjectReference `json:",inline"`
 
-	// Path is the HTTP endpoint path of the baackend MCP server.
+	// Path is the HTTP endpoint path of the backend MCP server.
 	// If not specified, the default is "/mcp".
 	//
 	// +kubebuilder:validation:Optional
@@ -121,12 +122,42 @@ type MCPRouteBackendRef struct {
 	// +optional
 	SecurityPolicy *MCPBackendSecurityPolicy `json:"securityPolicy,omitempty"`
 
-	// TODO: add fancy per-MCP server config. For example, Rate Limit, etc.
+	// ForwardHeaders specifies HTTP headers to extract from the incoming client request
+	// and forward to this backend MCP server.
+	// This enables per-user authentication passthrough (e.g., personal access tokens)
+	// without requiring OAuth configuration.
+	// Each entry specifies a header name to extract and an optional rename for the backend.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	ForwardHeaders []MCPHeaderForward `json:"forwardHeaders,omitempty"`
 }
 
-// MCPToolFilter filters tools using include patterns with exact matches or regular expressions.
+// MCPHeaderForward specifies a header to extract from the incoming request and forward to a backend.
+type MCPHeaderForward struct {
+	// Name is the header name to extract from the incoming client request.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// BackendHeader is the header name to use when forwarding to the backend.
+	// If not specified, the original header name is used.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	BackendHeader *string `json:"backendHeader,omitempty"`
+}
+
+// MCPToolFilter filters tools using include and exclude patterns with exact matches or regular expressions.
+// Exclude rules take precedence over include rules (deny-wins). When both include and exclude are specified,
+// a tool must match an include rule AND not match any exclude rule to be allowed.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.include) && !has(self.includeRegex)) || (!has(self.include) && has(self.includeRegex))", message="exactly one of include or includeRegex must be specified"
+// +kubebuilder:validation:XValidation:rule="!(has(self.include) && has(self.includeRegex))", message="include and includeRegex are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!(has(self.exclude) && has(self.excludeRegex))", message="exclude and excludeRegex are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="has(self.include) || has(self.includeRegex) || has(self.exclude) || has(self.excludeRegex)", message="at least one of include, includeRegex, exclude, or excludeRegex must be specified"
 type MCPToolFilter struct {
 	// Include is a list of tool names to include. Only the specified tools will be available.
 	//
@@ -142,9 +173,25 @@ type MCPToolFilter struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	IncludeRegex []string `json:"includeRegex,omitempty"`
+
+	// Exclude is a list of tool names to exclude. The specified tools will not be available.
+	// Exclude rules take precedence over include rules.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Exclude []string `json:"exclude,omitempty"`
+
+	// ExcludeRegex is a list of RE2-compatible regular expressions that, when matched, exclude the tool.
+	// Tools matching these patterns will not be available. Exclude rules take precedence over include rules.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	ExcludeRegex []string `json:"excludeRegex,omitempty"`
 }
 
-// MCPBackendSecurityPolicy defines the security policy for a sp
+// MCPBackendSecurityPolicy defines the security policy for a backend MCP server.
 type MCPBackendSecurityPolicy struct {
 	// APIKey is a mechanism to access a backend. The API key will be injected into the request headers.
 	// +optional
@@ -152,8 +199,10 @@ type MCPBackendSecurityPolicy struct {
 }
 
 // MCPBackendAPIKey defines the configuration for the API Key Authentication to a backend.
+// When both `header` and `queryParam` are unspecified, the API key will be injected into the "Authorization" header by default.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.secretRef) && !has(self.inline)) || (!has(self.secretRef) && has(self.inline))", message="exactly one of secretRef or inline must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.header) && has(self.queryParam))", message="only one of header or queryParam can be set"
 type MCPBackendAPIKey struct {
 	// secretRef is the Kubernetes secret which contains the API keys.
 	// The key of the secret should be "apiKey".
@@ -170,10 +219,23 @@ type MCPBackendAPIKey struct {
 	// When the header is "Authorization", the injected header value will be
 	// prefixed with "Bearer ".
 	//
+	// Either one of Header or QueryParam can be specified to inject the API key.
+	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	Header *string `json:"header,omitempty"`
+
+	// QueryParam is the HTTP query parameter to inject the API key into.
+	// For example, if QueryParam is set to "api_key", and the API key is "mysecretkey", the request URL will be modified to include
+	// "?api_key=mysecretkey".
+	//
+	// Either one of Header or QueryParam can be specified to inject the API key.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	QueryParam *string `json:"queryParam,omitempty"`
 }
 
 // MCPRouteSecurityPolicy defines the security policy for a MCPRoute.
@@ -232,6 +294,19 @@ type MCPRouteOAuth struct {
 	//
 	// +kubebuilder:validation:Required
 	ProtectedResourceMetadata ProtectedResourceMetadata `json:"protectedResourceMetadata"`
+
+	// ClaimToHeaders specifies JWT claims to extract and forward as HTTP headers to backend MCP servers.
+	// This enables backends to access user identity for authorization, auditing, or personalization.
+	//
+	// Security considerations:
+	// - Any client-provided headers matching the configured header names will be stripped to prevent forgery
+	// - Only the specified claims are extracted; the full JWT is not forwarded to backends
+	// - Consider using a header prefix (e.g., "X-Jwt-Claim-") to avoid conflicts with other headers
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	ClaimToHeaders []egv1a1.ClaimToHeader `json:"claimToHeaders,omitempty"`
 }
 
 // MCPRouteAuthorization defines the authorization configuration for a MCPRoute.

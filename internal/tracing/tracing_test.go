@@ -21,22 +21,16 @@ import (
 
 	cohereschema "github.com/envoyproxy/ai-gateway/internal/apischema/cohere"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
+	internaltesting "github.com/envoyproxy/ai-gateway/internal/testing"
 	"github.com/envoyproxy/ai-gateway/internal/testing/testotel"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/openinference"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
 )
 
-// clearEnv clears any OTEL configuration that could exist in the environment.
-func clearEnv(t *testing.T) {
-	t.Helper()
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	t.Setenv("OTEL_METRICS_EXPORTER", "")
-	t.Setenv("OTEL_SERVICE_NAME", "")
-}
-
 // TestNewTracingFromEnv_DefaultServiceName tests that the service name.
 // defaults to "ai-gateway" when OTEL_SERVICE_NAME is not set.
 func TestNewTracingFromEnv_DefaultServiceName(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	tests := []struct {
 		name              string
 		env               map[string]string
@@ -61,7 +55,6 @@ func TestNewTracingFromEnv_DefaultServiceName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
@@ -87,6 +80,7 @@ func TestNewTracingFromEnv_DefaultServiceName(t *testing.T) {
 }
 
 func TestNewTracingFromEnv_DisabledByEnv(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	tests := []struct {
 		name string
 		env  map[string]string
@@ -119,7 +113,6 @@ func TestNewTracingFromEnv_DisabledByEnv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
@@ -134,6 +127,7 @@ func TestNewTracingFromEnv_DisabledByEnv(t *testing.T) {
 // TestNewTracingFromEnv_EndpointHierarchy tests the OTEL endpoint hierarchy.
 // according to the OTEL spec where signal-specific endpoints override generic ones.
 func TestNewTracingFromEnv_EndpointHierarchy(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	tests := []struct {
 		name         string
 		env          map[string]string
@@ -173,7 +167,6 @@ func TestNewTracingFromEnv_EndpointHierarchy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
@@ -196,6 +189,7 @@ func TestNewTracingFromEnv_EndpointHierarchy(t *testing.T) {
 // TestNewTracingFromEnv_ConsoleExporter tests that console exporter works.
 // without requiring OTLP endpoints and doesn't make network calls.
 func TestNewTracingFromEnv_ConsoleExporter(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	tests := []struct {
 		name                string
 		env                 map[string]string
@@ -238,7 +232,6 @@ func TestNewTracingFromEnv_ConsoleExporter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
@@ -284,10 +277,10 @@ func TestNewTracingFromEnv_ConsoleExporter(t *testing.T) {
 // variable works.
 // See: https://opentelemetry.io/docs/languages/sdk-configuration/general/#otel_traces_exporter
 func TestNewTracingFromEnv_Exporter(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	// Just test 2 exporters to prove the SDK is wired up correctly.
 	for _, exporter := range []string{"console", "otlp"} {
 		t.Run(exporter, func(t *testing.T) {
-			clearEnv(t)
 			t.Setenv("OTEL_TRACES_EXPORTER", exporter)
 
 			var stdout bytes.Buffer
@@ -316,6 +309,7 @@ func TestNewTracingFromEnv_Exporter(t *testing.T) {
 // variable works.
 // See: https://opentelemetry.io/docs/languages/sdk-configuration/general/#otel_traces_sampler
 func TestNewTracingFromEnv_TracesSampler(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	// Just test 2 samplers to prove the SDK is wired up correctly.
 	tests := []struct {
 		sampler       string
@@ -327,7 +321,6 @@ func TestNewTracingFromEnv_TracesSampler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.sampler, func(t *testing.T) {
-			clearEnv(t)
 			t.Setenv("OTEL_TRACES_SAMPLER", tt.sampler)
 			collector, tracing := newTracingFromEnvForTest(t, io.Discard)
 
@@ -354,6 +347,7 @@ func TestNewTracingFromEnv_TracesSampler(t *testing.T) {
 // variable works.
 // See: https://opentelemetry.io/docs/languages/sdk-configuration/general/#otel_propagators
 func TestNewTracingFromEnv_OtelPropagators(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	// Just test 2 propagators to prove the SDK is wired up correctly.
 	tests := []struct {
 		propagator         string
@@ -374,7 +368,6 @@ func TestNewTracingFromEnv_OtelPropagators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.propagator, func(t *testing.T) {
-			clearEnv(t)
 			t.Setenv("OTEL_PROPAGATORS", tt.propagator)
 			collector, tracing := newTracingFromEnvForTest(t, io.Discard)
 
@@ -410,6 +403,7 @@ func TestNewTracingFromEnv_OtelPropagators(t *testing.T) {
 // work correctly to redact sensitive data from spans, following the OpenInference.
 // configuration specification.
 func TestNewTracingFromEnv_ChatCompletion_Redaction(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	tests := []struct {
 		name        string
 		hideInputs  bool
@@ -439,7 +433,6 @@ func TestNewTracingFromEnv_ChatCompletion_Redaction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
 			t.Setenv(openinference.EnvHideInputs, strconv.FormatBool(tt.hideInputs))
 			t.Setenv(openinference.EnvHideOutputs, strconv.FormatBool(tt.hideOutputs))
 
@@ -532,6 +525,7 @@ func newTracingFromEnvForTest(t *testing.T, stdout io.Writer) (*testotel.OTLPCol
 // TestNewTracingFromEnv_OTLPHeaders tests that OTEL_EXPORTER_OTLP_HEADERS
 // is properly handled by the autoexport package.
 func TestNewTracingFromEnv_OTLPHeaders(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	expectedAuthorization := "ApiKey test-key-123"
 	actualAuthorization := make(chan string, 1)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -540,7 +534,6 @@ func TestNewTracingFromEnv_OTLPHeaders(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	clearEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization="+expectedAuthorization)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", ts.URL)
 	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
@@ -567,9 +560,9 @@ func TestNewTracingFromEnv_OTLPHeaders(t *testing.T) {
 // TestNewTracingFromEnv_HeaderAttributeMapping verifies that headerAttributeMapping
 // passed to NewTracingFromEnv is applied by tracers to set span attributes.
 func TestNewTracingFromEnv_HeaderAttributeMapping(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	collector := testotel.StartOTLPCollector()
 	t.Cleanup(collector.Close)
-	clearEnv(t)
 	collector.SetEnv(t.Setenv)
 
 	mapping := map[string]string{
@@ -604,11 +597,147 @@ func TestNewTracingFromEnv_HeaderAttributeMapping(t *testing.T) {
 	require.Equal(t, "user456", attrs["tenant.id"])
 }
 
+// TestNewTracingFromEnv_HeaderAttributeMapping_LargeContext verifies that header
+// attributes are preserved even when the conversation has many messages (large
+// context window). Regression test for https://github.com/envoyproxy/ai-gateway/issues/2051.
+func TestNewTracingFromEnv_HeaderAttributeMapping_LargeContext(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
+	collector := testotel.StartOTLPCollector()
+	t.Cleanup(collector.Close)
+	collector.SetEnv(t.Setenv)
+
+	mapping := map[string]string{
+		"agent-session-id": "session.id",
+		"x-user-email":     "user.email",
+	}
+
+	result, err := NewTracingFromEnv(t.Context(), io.Discard, mapping)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = result.Shutdown(context.Background()) })
+
+	// 200 messages × ~2 attributes each = ~400, well above the OTEL SDK default of 128.
+	messages := make([]openai.ChatCompletionMessageParamUnion, 200)
+	for i := range messages {
+		messages[i] = openai.ChatCompletionMessageParamUnion{
+			OfUser: &openai.ChatCompletionUserMessageParam{
+				Role: openai.ChatMessageRoleUser,
+				Content: openai.StringOrUserRoleContentUnion{
+					Value: fmt.Sprintf("message %d", i),
+				},
+			},
+		}
+	}
+
+	headers := map[string]string{
+		"agent-session-id": "sess-large-ctx",
+		"x-user-email":     "user@example.com",
+	}
+
+	tr := result.ChatCompletionTracer()
+	req := &openai.ChatCompletionRequest{
+		Model:    openai.ModelGPT5Nano,
+		Messages: messages,
+	}
+	span := tr.StartSpanAndInjectHeaders(t.Context(), headers, propagation.MapCarrier{}, req, []byte("{}"))
+	require.NotNil(t, span)
+	span.RecordResponse(&openai.ChatCompletionResponse{
+		Model: openai.ModelGPT5Nano,
+		Choices: []openai.ChatCompletionResponseChoice{{
+			Message: openai.ChatCompletionResponseChoiceMessage{
+				Role:    "assistant",
+				Content: ptr.To("response"),
+			},
+		}},
+	})
+	span.EndSpan()
+
+	v1Span := collector.TakeSpan()
+	require.NotNil(t, v1Span)
+
+	attrs := make(map[string]string)
+	for _, kv := range v1Span.Attributes {
+		attrs[kv.Key] = kv.Value.GetStringValue()
+	}
+
+	require.Equal(t, "sess-large-ctx", attrs["session.id"])
+	require.Equal(t, "user@example.com", attrs["user.email"])
+	require.Equal(t, openai.ChatMessageRoleUser, attrs[openinference.InputMessageAttribute(0, openinference.MessageRole)])
+	require.Equal(t, "message 0", attrs[openinference.InputMessageAttribute(0, openinference.MessageContent)])
+	require.Equal(t, openai.ChatMessageRoleUser, attrs[openinference.InputMessageAttribute(199, openinference.MessageRole)])
+	require.Equal(t, "message 199", attrs[openinference.InputMessageAttribute(199, openinference.MessageContent)])
+	require.Equal(t, "assistant", attrs[openinference.OutputMessageAttribute(0, openinference.MessageRole)])
+	require.Greater(t, len(v1Span.Attributes), 128)
+}
+
+// TestNewTracingFromEnv_CaptureDisabled verifies that when the OpenInference
+// hide flags are set, no indexed message attributes are emitted, so the
+// AttributeCountLimit lift is correctly skipped while header attributes still arrive.
+func TestNewTracingFromEnv_CaptureDisabled(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
+	t.Setenv(openinference.EnvHideInputs, "true")
+	t.Setenv(openinference.EnvHideOutputs, "true")
+	t.Setenv(openinference.EnvHideInputMessages, "true")
+	t.Setenv(openinference.EnvHideOutputMessages, "true")
+
+	collector := testotel.StartOTLPCollector()
+	t.Cleanup(collector.Close)
+	collector.SetEnv(t.Setenv)
+
+	mapping := map[string]string{"agent-session-id": "session.id"}
+	result, err := NewTracingFromEnv(t.Context(), io.Discard, mapping)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = result.Shutdown(context.Background()) })
+
+	messages := make([]openai.ChatCompletionMessageParamUnion, 200)
+	for i := range messages {
+		messages[i] = openai.ChatCompletionMessageParamUnion{
+			OfUser: &openai.ChatCompletionUserMessageParam{
+				Role: openai.ChatMessageRoleUser,
+				Content: openai.StringOrUserRoleContentUnion{
+					Value: fmt.Sprintf("message %d", i),
+				},
+			},
+		}
+	}
+
+	tr := result.ChatCompletionTracer()
+	req := &openai.ChatCompletionRequest{Model: openai.ModelGPT5Nano, Messages: messages}
+	span := tr.StartSpanAndInjectHeaders(
+		t.Context(),
+		map[string]string{"agent-session-id": "sess-hidden"},
+		propagation.MapCarrier{},
+		req,
+		[]byte("{}"),
+	)
+	require.NotNil(t, span)
+	span.RecordResponse(&openai.ChatCompletionResponse{
+		Model: openai.ModelGPT5Nano,
+		Choices: []openai.ChatCompletionResponseChoice{{
+			Message: openai.ChatCompletionResponseChoiceMessage{
+				Role: "assistant", Content: ptr.To("response"),
+			},
+		}},
+	})
+	span.EndSpan()
+
+	v1Span := collector.TakeSpan()
+	require.NotNil(t, v1Span)
+
+	attrs := make(map[string]string)
+	for _, kv := range v1Span.Attributes {
+		require.NotContains(t, kv.Key, "llm.input_messages.")
+		require.NotContains(t, kv.Key, "llm.output_messages.")
+		attrs[kv.Key] = kv.Value.GetStringValue()
+	}
+	require.Equal(t, "sess-hidden", attrs["session.id"])
+}
+
 // TestNewTracingFromEnv_Embeddings_Redaction tests that the OpenInference
 // environment variables (OPENINFERENCE_HIDE_EMBEDDINGS_TEXT and OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS)
 // work correctly to redact sensitive data from embeddings spans, following the OpenInference
 // configuration specification.
 func TestNewTracingFromEnv_Embeddings_Redaction(t *testing.T) {
+	internaltesting.ClearTestEnv(t)
 	tests := []struct {
 		name                  string
 		hideEmbeddingsText    bool
@@ -638,7 +767,6 @@ func TestNewTracingFromEnv_Embeddings_Redaction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
 			t.Setenv(openinference.EnvHideEmbeddingsText, strconv.FormatBool(tt.hideEmbeddingsText))
 			t.Setenv(openinference.EnvHideEmbeddingsVectors, strconv.FormatBool(tt.hideEmbeddingsVectors))
 

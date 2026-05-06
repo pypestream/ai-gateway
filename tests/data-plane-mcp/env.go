@@ -23,6 +23,7 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
+	internaltesting "github.com/envoyproxy/ai-gateway/internal/testing"
 	"github.com/envoyproxy/ai-gateway/internal/testing/testotel"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 	"github.com/envoyproxy/ai-gateway/tests/internal/dataplaneenv"
@@ -75,10 +76,9 @@ const (
 )
 
 func requireNewMCPEnv(t *testing.T, forceJSONResponse bool, writeTimeout time.Duration, path string, extprocArgs ...string) *mcpEnv {
-	// clear env vars before starting the tests
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	t.Setenv("OTEL_METRICS_EXPORTER", "")
-	t.Setenv("OTEL_SERVICE_NAME", "")
+	t.Helper()
+
+	internaltesting.ClearTestEnv(t)
 
 	collector := testotel.StartOTLPCollector()
 	t.Cleanup(collector.Close)
@@ -88,25 +88,25 @@ func requireNewMCPEnv(t *testing.T, forceJSONResponse bool, writeTimeout time.Du
 			{
 				Name: "test-route",
 				Backends: []filterapi.MCPBackend{
-					{Name: "dumb-mcp-backend", Path: "/mcp"},
-					{Name: "default-mcp-backend", Path: "/mcp"},
+					{Name: "dumb-mcp-backend"},
+					{Name: "default-mcp-backend"},
 				},
 			},
 			{
 				Name: "yet-another-route",
 				Backends: []filterapi.MCPBackend{
 					{
-						Name: "default-mcp-backend", Path: "/mcp",
+						Name: "default-mcp-backend",
 						// This shouldn't affect any other routes.
 						ToolSelector: &filterapi.MCPToolSelector{Include: []string{"non-existent"}},
 					},
-					{Name: "dumb-mcp-backend", Path: "/mcp"},
+					{Name: "dumb-mcp-backend"},
 				},
 			},
 			{
 				Name: "awesome-route",
 				Backends: []filterapi.MCPBackend{
-					{Name: "dumb-mcp-backend", Path: "/mcp"},
+					{Name: "dumb-mcp-backend"},
 				},
 			},
 		},
@@ -356,4 +356,21 @@ func requireMCPSpanWithException(t *testing.T, span *tracev1.Span, expectedName 
 		}
 	}
 	require.True(t, foundException, "expected span to have exception event but none found")
+}
+
+// backendsFromSpan extracts backend names from "route to backend" events in the span.
+func backendsFromSpan(t *testing.T, span *tracev1.Span) []string {
+	t.Helper()
+	// Extract backends from span events
+	var backends []string
+	for _, event := range span.Events {
+		if event.Name == "route to backend" {
+			for _, attr := range event.Attributes {
+				if attr.Key == "mcp.backend.name" {
+					backends = append(backends, attr.Value.GetStringValue())
+				}
+			}
+		}
+	}
+	return backends
 }

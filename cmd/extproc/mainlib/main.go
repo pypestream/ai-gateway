@@ -42,6 +42,7 @@ type extProcFlags struct {
 	configPath                             string        // path to the configuration file.
 	extProcAddr                            string        // gRPC address for the external processor.
 	logLevel                               slog.Level    // log level for the external processor.
+	enableRedaction                        bool          // enable redaction of sensitive information in debug logs.
 	adminPort                              int           // HTTP port for the admin server (metrics and health).
 	requestHeaderAttributes                *string       // comma-separated key-value pairs for mapping HTTP request headers to otel attributes shared across metrics, spans, and access logs.
 	spanRequestHeaderAttributes            *string       // comma-separated key-value pairs for mapping HTTP request headers to otel span attributes.
@@ -92,6 +93,8 @@ func parseAndValidateFlags(args []string) (extProcFlags, error) {
 		"info",
 		"log level for the external processor. One of 'debug', 'info', 'warn', or 'error'.",
 	)
+	fs.BoolVar(&flags.enableRedaction, "enableRedaction", false,
+		"Enable redaction of sensitive information in debug logs.")
 	fs.IntVar(&flags.adminPort, "adminPort", 1064, "HTTP port for the admin server (serves /metrics and /health endpoints).")
 	fs.Func("requestHeaderAttributes",
 		"Comma-separated key-value pairs for mapping HTTP request headers to otel attributes shared across metrics, spans, and access logs. Format: x-tenant-id:tenant.id.",
@@ -279,12 +282,13 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	embeddingsMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationEmbedding)
 	imageGenerationMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationImageGeneration)
 	responsesMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationResponses)
+	speechMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationSpeech)
 	rerankMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationRerank)
 	mcpMetrics := metrics.NewMCP(meter, metricsRequestHeaderAttributes)
 
 	extproc.LogRequestHeaderAttributes = logRequestHeaderAttributes
 
-	server, err := extproc.NewServer(l)
+	server, err := extproc.NewServer(l, flags.enableRedaction)
 	if err != nil {
 		return fmt.Errorf("failed to create external processor server: %w", err)
 	}
@@ -296,6 +300,8 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		embeddingsMetricsFactory, tracing.EmbeddingsTracer(), endpointspec.EmbeddingsEndpointSpec{}))
 	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.OpenAI, "/v1/responses"), extproc.NewFactory(
 		responsesMetricsFactory, tracing.ResponsesTracer(), endpointspec.ResponsesEndpointSpec{}))
+	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.OpenAI, "/v1/audio/speech"), extproc.NewFactory(
+		speechMetricsFactory, tracing.SpeechTracer(), endpointspec.SpeechEndpointSpec{}))
 	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.OpenAI, "/v1/images/generations"), extproc.NewFactory(
 		imageGenerationMetricsFactory, tracing.ImageGenerationTracer(), endpointspec.ImageGenerationEndpointSpec{}))
 	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.Cohere, "/v2/rerank"), extproc.NewFactory(

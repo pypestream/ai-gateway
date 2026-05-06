@@ -16,7 +16,7 @@ import (
 )
 
 // ProcessorFactory is the factory function used to create new instances of a processor.
-type ProcessorFactory func(_ *filterapi.RuntimeConfig, _ map[string]string, _ *slog.Logger, isUpstreamFilter bool) (Processor, error)
+type ProcessorFactory func(_ *filterapi.RuntimeConfig, _ map[string]string, _ *slog.Logger, isUpstreamFilter bool, enableRedaction bool) (Processor, error)
 
 // Processor is the interface for the processor which corresponds to a single gRPC stream per the external processor filter.
 // This decouples the processor implementation detail from the server implementation.
@@ -36,7 +36,7 @@ type Processor interface {
 	//
 	// routerProcessor is the processor that is the "parent" which was used to determine the route at the
 	// router level. It holds the additional state that can be used to determine the backend to use.
-	SetBackend(ctx context.Context, backend *filterapi.Backend, handler filterapi.BackendAuthHandler, routerProcessor Processor) error
+	SetBackend(ctx context.Context, backend *filterapi.RuntimeBackend, routeName string, routerProcessor Processor) error
 }
 
 // passThroughProcessor implements the Processor interface.
@@ -63,6 +63,6 @@ func (p passThroughProcessor) ProcessResponseBody(context.Context, *extprocv3.Ht
 }
 
 // SetBackend implements [Processor.SetBackend].
-func (p passThroughProcessor) SetBackend(context.Context, *filterapi.Backend, filterapi.BackendAuthHandler, Processor) error {
+func (p passThroughProcessor) SetBackend(context.Context, *filterapi.RuntimeBackend, string, Processor) error {
 	return nil
 }

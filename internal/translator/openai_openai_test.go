@@ -11,6 +11,7 @@ import (
 	"io"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,7 @@ data: [DONE]
 	_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader([]byte(sseChunks)), true, nil)
 	require.NoError(t, err)
 	require.Equal(t, "gpt-4o-2024-11-20", responseModel) // Returns actual versioned model
-	require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15), tokenUsage)
+	require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15, -1), tokenUsage)
 }
 
 // TestResponseModel_EmptyFallback tests the fallback to request model when response model is empty
@@ -83,7 +84,7 @@ func TestResponseModel_EmptyFallback(t *testing.T) {
 		_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader([]byte(responseJSON)), false, nil)
 		require.NoError(t, err)
 		require.Equal(t, "gpt-4o", responseModel) // Falls back to request model
-		require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15), tokenUsage)
+		require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15, -1), tokenUsage)
 	})
 
 	t.Run("streaming", func(t *testing.T) {
@@ -112,7 +113,7 @@ data: [DONE]
 		_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader([]byte(sseChunks)), true, nil)
 		require.NoError(t, err)
 		require.Equal(t, "gpt-4o-mini", responseModel) // Falls back to request model
-		require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15), tokenUsage)
+		require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15, -1), tokenUsage)
 	})
 
 	t.Run("with model override", func(t *testing.T) {
@@ -148,7 +149,7 @@ data: [DONE]
 		_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader([]byte(responseJSON)), false, nil)
 		require.NoError(t, err)
 		require.Equal(t, "gpt-4o-2024-11-20", responseModel) // Falls back to overridden model
-		require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15), tokenUsage)
+		require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15, -1), tokenUsage)
 	})
 }
 
@@ -358,7 +359,7 @@ data: [DONE]
 			o := &openAIToOpenAITranslatorV1ChatCompletion{}
 			_, _, usedToken, _, err := o.ResponseBody(nil, bytes.NewBuffer(body), false, s)
 			require.NoError(t, err)
-			require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42), usedToken)
+			require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42, -1), usedToken)
 			require.Equal(t, &resp, s.Resp)
 		})
 		t.Run("valid body with different response model", func(t *testing.T) {
@@ -373,9 +374,26 @@ data: [DONE]
 			o := &openAIToOpenAITranslatorV1ChatCompletion{}
 			_, _, usedToken, _, err := o.ResponseBody(nil, bytes.NewBuffer(body), false, s)
 			require.NoError(t, err)
-			require.Equal(t, tokenUsageFrom(10, -1, -1, 20, 30), usedToken)
+			require.Equal(t, tokenUsageFrom(10, -1, -1, 20, 30, -1), usedToken)
 			require.Equal(t, &resp, s.Resp)
 		})
+	})
+	t.Run("valid body with reasoning tokens", func(t *testing.T) {
+		s := &testotel.MockSpan{}
+		var resp openai.ChatCompletionResponse
+		resp.Usage.PromptTokens = 10
+		resp.Usage.CompletionTokens = 20
+		resp.Usage.TotalTokens = 30
+		resp.Usage.CompletionTokensDetails = &openai.CompletionTokensDetails{
+			ReasoningTokens: 8,
+		}
+		body, err := json.Marshal(resp)
+		require.NoError(t, err)
+		o := &openAIToOpenAITranslatorV1ChatCompletion{}
+		_, _, usedToken, _, err := o.ResponseBody(nil, bytes.NewBuffer(body), false, s)
+		require.NoError(t, err)
+		require.Equal(t, tokenUsageFrom(10, -1, -1, 20, 30, 8), usedToken)
+		require.Equal(t, &resp, s.Resp)
 	})
 	t.Run("response reasoning content", func(t *testing.T) {
 		t.Run("valid body", func(t *testing.T) {
@@ -397,7 +415,7 @@ data: [DONE]
 			o := &openAIToOpenAITranslatorV1ChatCompletion{}
 			_, _, usedToken, _, err := o.ResponseBody(nil, bytes.NewBuffer(body), false, s)
 			require.NoError(t, err)
-			require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42), usedToken)
+			require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42, -1), usedToken)
 			require.Equal(t, &resp, s.Resp)
 		})
 	})
@@ -409,7 +427,7 @@ func TestExtractUsageFromBufferEvent(t *testing.T) {
 		o := &openAIToOpenAITranslatorV1ChatCompletion{}
 		o.buffered = []byte("data: {\"usage\": {\"total_tokens\": 42}}\n")
 		usedToken := o.extractUsageFromBufferEvent(s)
-		require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42), usedToken)
+		require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42, -1), usedToken)
 		require.Empty(t, o.buffered)
 		require.Len(t, s.RespChunks, 1)
 	})
@@ -418,7 +436,7 @@ func TestExtractUsageFromBufferEvent(t *testing.T) {
 		o := &openAIToOpenAITranslatorV1ChatCompletion{}
 		o.buffered = []byte("data: invalid\ndata: {\"usage\": {\"total_tokens\": 42}}\n")
 		usedToken := o.extractUsageFromBufferEvent(nil)
-		require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42), usedToken)
+		require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42, -1), usedToken)
 		require.Empty(t, o.buffered)
 	})
 
@@ -426,12 +444,12 @@ func TestExtractUsageFromBufferEvent(t *testing.T) {
 		o := &openAIToOpenAITranslatorV1ChatCompletion{}
 		o.buffered = []byte("data: {}\n\ndata: ")
 		usedToken := o.extractUsageFromBufferEvent(nil)
-		require.Equal(t, tokenUsageFrom(-1, -1, -1, -1, -1), usedToken)
+		require.Equal(t, tokenUsageFrom(-1, -1, -1, -1, -1, -1), usedToken)
 		require.GreaterOrEqual(t, len(o.buffered), 1)
 
 		o.buffered = append(o.buffered, []byte("{\"usage\": {\"total_tokens\": 42}}\n")...)
 		usedToken = o.extractUsageFromBufferEvent(nil)
-		require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42), usedToken)
+		require.Equal(t, tokenUsageFrom(0, -1, -1, 0, 42, -1), usedToken)
 		require.Empty(t, o.buffered)
 	})
 
@@ -439,7 +457,15 @@ func TestExtractUsageFromBufferEvent(t *testing.T) {
 		o := &openAIToOpenAITranslatorV1ChatCompletion{}
 		o.buffered = []byte("data: {\"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 3, \"total_tokens\": 8, \"prompt_tokens_details\": {\"cached_tokens\": 2, \"cache_creation_input_tokens\": 1}}}\n")
 		usedToken := o.extractUsageFromBufferEvent(nil)
-		require.Equal(t, tokenUsageFrom(5, 2, 1, 3, 8), usedToken)
+		require.Equal(t, tokenUsageFrom(5, 2, 1, 3, 8, -1), usedToken)
+		require.Empty(t, o.buffered)
+	})
+
+	t.Run("valid usage data with reasoning tokens", func(t *testing.T) {
+		o := &openAIToOpenAITranslatorV1ChatCompletion{}
+		o.buffered = []byte("data: {\"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30, \"completion_tokens_details\": {\"reasoning_tokens\": 8}}}\n")
+		usedToken := o.extractUsageFromBufferEvent(nil)
+		require.Equal(t, tokenUsageFrom(10, -1, -1, 20, 30, 8), usedToken)
 		require.Empty(t, o.buffered)
 	})
 
@@ -447,7 +473,7 @@ func TestExtractUsageFromBufferEvent(t *testing.T) {
 		o := &openAIToOpenAITranslatorV1ChatCompletion{}
 		o.buffered = []byte("data: invalid\n")
 		usedToken := o.extractUsageFromBufferEvent(nil)
-		require.Equal(t, tokenUsageFrom(-1, -1, -1, -1, -1), usedToken)
+		require.Equal(t, tokenUsageFrom(-1, -1, -1, -1, -1, -1), usedToken)
 		require.Empty(t, o.buffered)
 	})
 }
@@ -469,7 +495,7 @@ func TestResponseModel_OpenAI(t *testing.T) {
 	_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewBuffer(body), true, nil)
 	require.NoError(t, err)
 	require.Equal(t, "gpt-4o-2024-08-06", responseModel)
-	require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15), tokenUsage)
+	require.Equal(t, tokenUsageFrom(10, -1, -1, 5, 15, -1), tokenUsage)
 }
 
 // TestResponseModel_OpenAIEmbeddings tests OpenAI embeddings (not virtualized but has response field)
@@ -488,5 +514,179 @@ func TestResponseModel_OpenAIEmbeddings(t *testing.T) {
 	_, _, tokenUsage, responseModel, err := translator.ResponseBody(nil, bytes.NewReader(body), true, nil)
 	require.NoError(t, err)
 	require.Equal(t, "text-embedding-ada-002", responseModel) // Uses response field as authoritative
-	require.Equal(t, tokenUsageFrom(10, -1, -1, -1, 10), tokenUsage)
+	require.Equal(t, tokenUsageFrom(10, -1, -1, -1, 10, -1), tokenUsage)
+}
+
+func TestRedactBody(t *testing.T) {
+	t.Run("redacts message content", func(t *testing.T) {
+		translator := &openAIToOpenAITranslatorV1ChatCompletion{}
+
+		originalContent := "This is sensitive AI-generated content"
+		resp := &openai.ChatCompletionResponse{
+			ID:      "chatcmpl-123",
+			Model:   "gpt-4o",
+			Object:  "chat.completion",
+			Created: openai.JSONUNIXTime(time.Unix(1234567890, 0)),
+			Choices: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:    "assistant",
+						Content: &originalContent,
+					},
+					FinishReason: "stop",
+				},
+			},
+			Usage: openai.Usage{
+				PromptTokens:     10,
+				CompletionTokens: 5,
+				TotalTokens:      15,
+			},
+		}
+
+		redacted := translator.RedactBody(resp)
+
+		// Verify original is not modified
+		require.Equal(t, "This is sensitive AI-generated content", *resp.Choices[0].Message.Content)
+
+		// Verify redacted copy has redacted content
+		require.NotNil(t, redacted.Choices[0].Message.Content)
+		require.Contains(t, *redacted.Choices[0].Message.Content, "[REDACTED LENGTH=")
+		require.Contains(t, *redacted.Choices[0].Message.Content, "HASH=")
+		require.NotContains(t, *redacted.Choices[0].Message.Content, "sensitive")
+
+		// Verify non-sensitive fields are preserved
+		require.Equal(t, "chatcmpl-123", redacted.ID)
+		require.Equal(t, "gpt-4o", redacted.Model)
+		require.Equal(t, time.Time(resp.Created).Unix(), time.Time(redacted.Created).Unix())
+		require.Equal(t, 10, redacted.Usage.PromptTokens)
+		require.Equal(t, 5, redacted.Usage.CompletionTokens)
+	})
+
+	t.Run("redacts tool calls", func(t *testing.T) {
+		translator := &openAIToOpenAITranslatorV1ChatCompletion{}
+
+		resp := &openai.ChatCompletionResponse{
+			ID:    "chatcmpl-456",
+			Model: "gpt-4o",
+			Choices: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role: "assistant",
+						ToolCalls: []openai.ChatCompletionMessageToolCallParam{
+							{
+								ID:   ptr.To("call_123"),
+								Type: "function",
+								Function: openai.ChatCompletionMessageToolCallFunctionParam{
+									Name:      "get_weather",
+									Arguments: `{"location": "San Francisco", "unit": "celsius"}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		redacted := translator.RedactBody(resp)
+
+		// Verify original is not modified
+		require.Equal(t, "get_weather", resp.Choices[0].Message.ToolCalls[0].Function.Name)
+		require.Contains(t, resp.Choices[0].Message.ToolCalls[0].Function.Arguments, "San Francisco")
+
+		// Verify redacted copy has redacted tool calls
+		require.Len(t, redacted.Choices[0].Message.ToolCalls, 1)
+		require.Contains(t, redacted.Choices[0].Message.ToolCalls[0].Function.Name, "[REDACTED")
+		require.Contains(t, redacted.Choices[0].Message.ToolCalls[0].Function.Arguments, "[REDACTED")
+		require.NotContains(t, redacted.Choices[0].Message.ToolCalls[0].Function.Arguments, "San Francisco")
+	})
+
+	t.Run("redacts audio data", func(t *testing.T) {
+		translator := &openAIToOpenAITranslatorV1ChatCompletion{}
+
+		resp := &openai.ChatCompletionResponse{
+			ID:    "chatcmpl-789",
+			Model: "gpt-4o-audio",
+			Choices: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role: "assistant",
+						Audio: &openai.ChatCompletionResponseChoiceMessageAudio{
+							ID:         "audio_123",
+							Data:       "base64encodedaudiodata",
+							Transcript: "This is the audio transcript",
+							ExpiresAt:  1234567890,
+						},
+					},
+				},
+			},
+		}
+
+		redacted := translator.RedactBody(resp)
+
+		// Verify original is not modified
+		require.Equal(t, "base64encodedaudiodata", resp.Choices[0].Message.Audio.Data)
+		require.Equal(t, "This is the audio transcript", resp.Choices[0].Message.Audio.Transcript)
+
+		// Verify redacted copy has redacted audio
+		require.NotNil(t, redacted.Choices[0].Message.Audio)
+		require.Contains(t, redacted.Choices[0].Message.Audio.Data, "[REDACTED")
+		require.Contains(t, redacted.Choices[0].Message.Audio.Transcript, "[REDACTED")
+		require.NotContains(t, redacted.Choices[0].Message.Audio.Data, "base64encodedaudiodata")
+		require.NotContains(t, redacted.Choices[0].Message.Audio.Transcript, "audio transcript")
+	})
+
+	t.Run("handles nil response", func(t *testing.T) {
+		translator := &openAIToOpenAITranslatorV1ChatCompletion{}
+
+		redacted := translator.RedactBody(nil)
+
+		require.Nil(t, redacted)
+	})
+
+	t.Run("handles empty choices", func(t *testing.T) {
+		translator := &openAIToOpenAITranslatorV1ChatCompletion{}
+
+		resp := &openai.ChatCompletionResponse{
+			ID:      "chatcmpl-empty",
+			Model:   "gpt-4o",
+			Choices: []openai.ChatCompletionResponseChoice{},
+		}
+
+		redacted := translator.RedactBody(resp)
+
+		require.NotNil(t, redacted)
+		require.Empty(t, redacted.Choices)
+	})
+
+	t.Run("does not modify original response", func(t *testing.T) {
+		translator := &openAIToOpenAITranslatorV1ChatCompletion{}
+
+		originalContent := "Original content"
+		resp := &openai.ChatCompletionResponse{
+			ID:    "chatcmpl-999",
+			Model: "gpt-4o",
+			Choices: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:    "assistant",
+						Content: &originalContent,
+					},
+				},
+			},
+		}
+
+		// Create a copy of the original for comparison
+		originalContentCopy := *resp.Choices[0].Message.Content
+
+		// Redact the response
+		_ = translator.RedactBody(resp)
+
+		// Verify original is completely unchanged
+		require.Equal(t, originalContentCopy, *resp.Choices[0].Message.Content)
+		require.NotContains(t, *resp.Choices[0].Message.Content, "[REDACTED")
+	})
 }

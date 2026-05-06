@@ -21,13 +21,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	openaigo "github.com/openai/openai-go/v2"
+	openaigo "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"k8s.io/utils/ptr"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
+	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/metrics"
 )
@@ -1382,7 +1383,7 @@ data: {"id":"123","choices":[{"index":0,"delta":{"role":"assistant","tool_calls"
 
 data: {"id":"123","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls"}],"created":1731679200,"model":"claude-sonnet-4","object":"chat.completion.chunk"}
 
-data: {"id":"123","created":1731679200,"model":"claude-sonnet-4","service_tier":"default","object":"chat.completion.chunk","usage":{"prompt_tokens":386,"completion_tokens":75,"total_tokens":461}}
+data: {"id":"123","choices":[],"created":1731679200,"model":"claude-sonnet-4","service_tier":"default","object":"chat.completion.chunk","usage":{"prompt_tokens":386,"completion_tokens":75,"total_tokens":461}}
 
 data: [DONE]
 `, string(normalizedResults))
@@ -1748,6 +1749,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_ResponseBody(t *testing.T)
 					-1,
 					int32(tt.output.Usage.CompletionTokens), // nolint:gosec
 					int32(tt.output.Usage.TotalTokens),      // nolint:gosec
+					-1,
 				)
 				if tt.input.Usage.CacheReadInputTokens != nil {
 					expectedUsage.SetCachedInputTokens(uint32(tt.output.Usage.PromptTokensDetails.CachedTokens)) //nolint:gosec
@@ -1756,7 +1758,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_ResponseBody(t *testing.T)
 					expectedUsage.SetCacheCreationInputTokens(uint32(tt.output.Usage.PromptTokensDetails.CacheCreationTokens)) //nolint:gosec
 				}
 			} else {
-				expectedUsage = tokenUsageFrom(-1, -1, -1, -1, -1)
+				expectedUsage = tokenUsageFrom(-1, -1, -1, -1, -1, -1)
 			}
 			require.Equal(t, expectedUsage, usedToken)
 		})
@@ -1839,7 +1841,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_RequestBodyErr(t *testing.
 				},
 				ToolChoice: &openai.ChatCompletionToolChoiceUnion{Value: 123},
 			},
-			err: fmt.Errorf("unexpected type: int"),
+			err: internalapi.ErrInvalidRequestBody,
 		},
 	}
 	for _, tt := range tests {
@@ -1847,7 +1849,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_RequestBodyErr(t *testing.
 			o := &openAIToAWSBedrockTranslatorV1ChatCompletion{}
 			originalReq := tt.input
 			_, _, err := o.RequestBody(nil, &originalReq, false)
-			require.Equal(t, err.Error(), tt.err.Error())
+			require.ErrorIs(t, err, tt.err)
 		})
 	}
 }
@@ -1957,6 +1959,7 @@ func TestOpenAIToAWSBedrockTranslator_convertEvent(t *testing.T) {
 				Model:   "claude-sonnet-4",
 				Created: openai.JSONUNIXTime(time.Unix(releaseDateUnix, 0)), // 0 nanoseconds
 				Object:  "chat.completion.chunk",
+				Choices: []openai.ChatCompletionResponseChunkChoice{},
 				Usage: &openai.Usage{
 					TotalTokens:      35,
 					PromptTokens:     15,

@@ -38,6 +38,7 @@ import (
 
 type flags struct {
 	extProcLogLevel                string
+	extProcEnableRedaction         bool
 	extProcImage                   string
 	extProcImagePullPolicy         corev1.PullPolicy
 	enableLeaderElection           bool
@@ -55,6 +56,8 @@ type flags struct {
 	rootPrefix                     string
 	extProcExtraEnvVars            string
 	extProcImagePullSecrets        string
+	// webhookPort is the port for the mutating webhook server.
+	webhookPort int
 	// extProcMaxRecvMsgSize is the maximum message size in bytes that the gRPC server can receive.
 	extProcMaxRecvMsgSize int
 	// maxRecvMsgSize is the maximum message size in bytes that the gRPC extension server can receive.
@@ -106,6 +109,11 @@ func parseAndValidateFlags(args []string) (*flags, error) {
 		"info",
 		"The log level for the external processor. One of 'debug', 'info', 'warn', or 'error'.",
 	)
+	extProcEnableRedactionPtr := fs.Bool(
+		"extProcEnableRedaction",
+		false,
+		"Enable redaction of sensitive information in debug logs for the external processor.",
+	)
 	extProcImagePtr := fs.String(
 		"extProcImage",
 		"docker.io/envoyproxy/ai-gateway-extproc:latest",
@@ -130,6 +138,11 @@ func parseAndValidateFlags(args []string) (*flags, error) {
 		"port",
 		":1063",
 		"gRPC port for the extension server",
+	)
+	webhookPort := fs.Int(
+		"webhookPort",
+		9443,
+		"The port for the mutating webhook server.",
 	)
 	tlsCertDir := fs.String(
 		"tlsCertDir",
@@ -306,6 +319,7 @@ func parseAndValidateFlags(args []string) (*flags, error) {
 
 	return &flags{
 		extProcLogLevel:                        *extProcLogLevelPtr,
+		extProcEnableRedaction:                 *extProcEnableRedactionPtr,
 		extProcImage:                           *extProcImagePtr,
 		extProcImagePullPolicy:                 extProcPullPolicy,
 		enableLeaderElection:                   *enableLeaderElectionPtr,
@@ -323,6 +337,7 @@ func parseAndValidateFlags(args []string) (*flags, error) {
 		rootPrefix:                             *rootPrefix,
 		extProcExtraEnvVars:                    *extProcExtraEnvVars,
 		extProcImagePullSecrets:                *extProcImagePullSecrets,
+		webhookPort:                            *webhookPort,
 		extProcMaxRecvMsgSize:                  *extProcMaxRecvMsgSize,
 		maxRecvMsgSize:                         *maxRecvMsgSize,
 		watchNamespaces:                        parseWatchNamespaces(*watchNamespaces),
@@ -366,7 +381,7 @@ func main() {
 			CertDir:  parsedFlags.tlsCertDir,
 			CertName: parsedFlags.tlsCertName,
 			KeyName:  parsedFlags.tlsKeyName,
-			Port:     9443,
+			Port:     parsedFlags.webhookPort,
 		}),
 	}
 	mgr, err := ctrl.NewManager(k8sConfig, mgrOpts)
@@ -410,6 +425,7 @@ func main() {
 		ExtProcImage:                           parsedFlags.extProcImage,
 		ExtProcImagePullPolicy:                 parsedFlags.extProcImagePullPolicy,
 		ExtProcLogLevel:                        parsedFlags.extProcLogLevel,
+		ExtProcEnableRedaction:                 parsedFlags.extProcEnableRedaction,
 		EnableLeaderElection:                   parsedFlags.enableLeaderElection,
 		UDSPath:                                extProcUDSPath,
 		RequestHeaderAttributes:                parsedFlags.requestHeaderAttributes,

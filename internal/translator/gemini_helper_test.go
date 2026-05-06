@@ -6,13 +6,14 @@
 package translator
 
 import (
+	"encoding/base64"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	openaigo "github.com/openai/openai-go/v2"
+	openaigo "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genai"
@@ -169,7 +170,7 @@ func TestAssistantMsgToGeminiParts(t *testing.T) {
 			},
 			expectedParts:     nil,
 			expectedToolCalls: map[string]string{},
-			expectedErrorMsg:  "unsupported content type in assistant message: int",
+			expectedErrorMsg:  "message 'content' must be a string or an array",
 		},
 		{
 			name: "simple text content",
@@ -310,7 +311,7 @@ func TestAssistantMsgToGeminiParts(t *testing.T) {
 					},
 				},
 			},
-			expectedErrorMsg: "function arguments should be valid json string",
+			expectedErrorMsg: "function arguments must be valid JSON",
 		},
 		{
 			name: "nil content",
@@ -603,7 +604,7 @@ func TestDeveloperMsgToGeminiParts(t *testing.T) {
 			expectedParts: []*genai.Part{
 				{Text: "This is a system message"},
 			},
-			expectedErrorMsg: "unsupported content type in developer message: int",
+			expectedErrorMsg: "message 'content' must be a string or an array",
 		},
 	}
 
@@ -642,7 +643,7 @@ func TestToolMsgToGeminiParts(t *testing.T) {
 				ToolCallID: "tool_123",
 			},
 			knownToolCalls:   map[string]string{"tool_123": "get_weather"},
-			expectedErrorMsg: "unsupported content type in tool message: int",
+			expectedErrorMsg: "message 'content' must be a string or an array",
 		},
 		{
 			name: "Tool message with string content",
@@ -891,7 +892,7 @@ func TestUserMsgToGeminiParts(t *testing.T) {
 					},
 				},
 			},
-			expectedErrMsg: "data uri does not have a valid format",
+			expectedErrMsg: "invalid image data URI",
 		},
 		{
 			name: "audio content - not supported",
@@ -907,7 +908,7 @@ func TestUserMsgToGeminiParts(t *testing.T) {
 					},
 				},
 			},
-			expectedErrMsg: "audio content not supported yet",
+			expectedErrMsg: "audio content not supported",
 		},
 		{
 			name: "unsupported content type",
@@ -917,7 +918,7 @@ func TestUserMsgToGeminiParts(t *testing.T) {
 					Value: 42, // not a string or array.
 				},
 			},
-			expectedErrMsg: "unsupported content type in user message: int",
+			expectedErrMsg: "message 'content' must be a string or an array",
 		},
 		{
 			name: "image with low detail",
@@ -1057,7 +1058,7 @@ func TestUserMsgToGeminiParts(t *testing.T) {
 					},
 				},
 			},
-			expectedErrMsg: "invalid Detail:",
+			expectedErrMsg: "invalid detail",
 		},
 	}
 
@@ -1259,7 +1260,7 @@ func TestOpenAIReqToGeminiGenerationConfig(t *testing.T) {
 					},
 				},
 			},
-			expectedErrMsg: "invalid JSON schema",
+			expectedErrMsg: "invalid json schema",
 			requestModel:   "gemini-2.5-flash",
 		},
 		{
@@ -1307,7 +1308,7 @@ func TestOpenAIReqToGeminiGenerationConfig(t *testing.T) {
 				},
 				GuidedChoice: []string{"A", "B"},
 			},
-			expectedErrMsg: "multiple format specifiers specified",
+			expectedErrMsg: "only one of responseFormat, guidedChoice, guidedRegex, guidedJSON can be specified",
 			requestModel:   "gemini-2.5-flash",
 		},
 		{
@@ -1337,11 +1338,24 @@ func TestOpenAIReqToGeminiGenerationConfig(t *testing.T) {
 			requestModel:         "gemini-3-pro",
 		},
 		{
-			name: "reasoning effort unsupported",
+			name: "high reasoning effort maps to ThinkingLevelHigh",
 			input: &openai.ChatCompletionRequest{
 				ReasoningEffort: openaigo.ReasoningEffortHigh,
 			},
-			expectedErrMsg: "reasoning effort:",
+			expectedGenerationConfig: &genai.GenerationConfig{
+				ThinkingConfig: &genai.ThinkingConfig{
+					ThinkingLevel: genai.ThinkingLevelHigh,
+				},
+			},
+			expectedResponseMode: responseModeNone,
+			requestModel:         "gemini-3-flash",
+		},
+		{
+			name: "reasoning effort unsupported value",
+			input: &openai.ChatCompletionRequest{
+				ReasoningEffort: "invalid_value",
+			},
+			expectedErrMsg: "unsupported reasoning effort level",
 			requestModel:   "gemini-3-pro",
 		},
 	}
@@ -1538,7 +1552,7 @@ func TestOpenAIToolsToGeminiTools(t *testing.T) {
 				},
 			},
 			parametersJSONSchemaAvailable: false,
-			expectedError:                 "invalid JSON schema for parameters in tool bad: expected map[string]any",
+			expectedError:                 "tool bad parameters must be a JSON object",
 		},
 		{
 			name: "tool with invalid parameters schema - parametersJSONSchemaAvailable=true",
@@ -1913,12 +1927,12 @@ func TestOpenAIToolChoiceToGeminiToolConfig(t *testing.T) {
 		{
 			name:      "unsupported type",
 			input:     &openai.ChatCompletionToolChoiceUnion{Value: 123},
-			expectErr: "unsupported tool choice type",
+			expectErr: "tool_choice type not supported",
 		},
 		{
 			name:      "unsupported string value",
 			input:     &openai.ChatCompletionToolChoiceUnion{Value: "invalid"},
-			expectErr: "unsupported tool choice: 'invalid'",
+			expectErr: "unsupported tool_choice value 'invalid'",
 		},
 	}
 
@@ -2344,6 +2358,17 @@ func TestExtractTextAndThoughtSummaryFromGeminiParts(t *testing.T) {
 			expectedThoughtSummary: "Let me think step by step",
 			expectedText:           "Here is the conclusion",
 		},
+		{
+			name: "thought then visible text with ThoughtSignature on text part",
+			parts: []*genai.Part{
+				{Text: "internal reasoning", Thought: true},
+				{Text: "answer", Thought: false, ThoughtSignature: []byte{0xab, 0xcd}},
+			},
+			responseMode:           responseModeNone,
+			expectedThoughtSummary: "internal reasoning",
+			expectedText:           "answer",
+			expectedSignature:      base64.StdEncoding.EncodeToString([]byte{0xab, 0xcd}),
+		},
 	}
 
 	for _, tc := range tests {
@@ -2357,6 +2382,305 @@ func TestExtractTextAndThoughtSummaryFromGeminiParts(t *testing.T) {
 			}
 			if signature != tc.expectedSignature {
 				t.Errorf("signature result of extractTextAndThoughtSummaryFromGeminiParts() = %q, want %q", signature, tc.expectedSignature)
+			}
+		})
+	}
+}
+
+func TestGeminiCandidatesToOpenAIChoices(t *testing.T) {
+	toolSigB64 := base64.StdEncoding.EncodeToString([]byte("tool-sig"))
+	thoughtThenTool := []*genai.Part{
+		{Text: "planning step", Thought: true},
+		{
+			FunctionCall: &genai.FunctionCall{
+				Name: "get_weather",
+				Args: map[string]any{"city": "NYC"},
+			},
+			ThoughtSignature: []byte("tool-sig"),
+		},
+	}
+
+	tests := []struct {
+		name         string
+		candidates   []*genai.Candidate
+		responseMode geminiResponseMode
+		want         []openai.ChatCompletionResponseChoice
+		wantErr      string
+	}{
+		{
+			name: "plain text assistant message",
+			candidates: []*genai.Candidate{
+				{
+					Content:      &genai.Content{Parts: []*genai.Part{{Text: "hello"}}},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:    openai.ChatMessageRoleAssistant,
+						Content: ptr.To("hello"),
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonStop,
+				},
+			},
+		},
+		{
+			name: "no thought text but signature on text part still creates thinking_block",
+			candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "just an answer", ThoughtSignature: []byte("sig-only")},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role: openai.ChatMessageRoleAssistant,
+						ThinkingBlocks: []openai.ThinkingBlock{
+							{Type: "thinking", Signature: base64.StdEncoding.EncodeToString([]byte("sig-only"))},
+						},
+						Content: ptr.To("just an answer"),
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonStop,
+				},
+			},
+		},
+		{
+			name: "thought summary without signature sets reasoning_content only",
+			candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "Let me reason", Thought: true},
+							{Text: "final answer"},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:             openai.ChatMessageRoleAssistant,
+						ReasoningContent: &openai.ReasoningContentUnion{Value: "Let me reason"},
+						Content:          ptr.To("final answer"),
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonStop,
+				},
+			},
+		},
+		{
+			name: "tool call with thought signature only yields signature thinking block",
+			candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{
+								FunctionCall: &genai.FunctionCall{
+									Name: "fn",
+									Args: map[string]any{"k": 1},
+								},
+								ThoughtSignature: []byte("tool-sig"),
+							},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role: openai.ChatMessageRoleAssistant,
+						ThinkingBlocks: []openai.ThinkingBlock{
+							{Type: "thinking", Signature: toolSigB64},
+						},
+						ToolCalls: []openai.ChatCompletionMessageToolCallParam{
+							{
+								ID:   ptr.To("id-0"),
+								Type: openai.ChatCompletionMessageToolCallTypeFunction,
+								Function: openai.ChatCompletionMessageToolCallFunctionParam{
+									Name:      "fn",
+									Arguments: `{"k":1}`,
+								},
+							},
+						},
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonToolCalls,
+				},
+			},
+		},
+		{
+			name: "thought with text-part signature sets reasoning_content and thinking_blocks",
+			candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "internal reasoning", Thought: true},
+							{Text: "visible answer", ThoughtSignature: []byte("text-sig")},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:             openai.ChatMessageRoleAssistant,
+						ReasoningContent: &openai.ReasoningContentUnion{Value: "internal reasoning"},
+						ThinkingBlocks: []openai.ThinkingBlock{
+							{Type: "thinking", Thinking: "internal reasoning", Signature: base64.StdEncoding.EncodeToString([]byte("text-sig"))},
+						},
+						Content: ptr.To("visible answer"),
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonStop,
+				},
+			},
+		},
+		{
+			name: "thought plus tool creates thinking block from tool signature only",
+			candidates: []*genai.Candidate{
+				{
+					Content:      &genai.Content{Parts: thoughtThenTool},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:             openai.ChatMessageRoleAssistant,
+						ReasoningContent: &openai.ReasoningContentUnion{Value: "planning step"},
+						ThinkingBlocks: []openai.ThinkingBlock{
+							{Type: "thinking", Signature: toolSigB64},
+						},
+						ToolCalls: []openai.ChatCompletionMessageToolCallParam{
+							{
+								ID:   ptr.To("id-0"),
+								Type: openai.ChatCompletionMessageToolCallTypeFunction,
+								Function: openai.ChatCompletionMessageToolCallFunctionParam{
+									Name:      "get_weather",
+									Arguments: `{"city":"NYC"}`,
+								},
+							},
+						},
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonToolCalls,
+				},
+			},
+		},
+		{
+			name: "thought plus text-sig plus tool-sig merges tool sig into existing block",
+			candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "deep reasoning", Thought: true},
+							{Text: "visible", ThoughtSignature: []byte("text-sig")},
+							{FunctionCall: &genai.FunctionCall{Name: "fn", Args: map[string]any{"a": 1}}, ThoughtSignature: []byte("tool-sig")},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role:             openai.ChatMessageRoleAssistant,
+						ReasoningContent: &openai.ReasoningContentUnion{Value: "deep reasoning"},
+						ThinkingBlocks: []openai.ThinkingBlock{
+							{Type: "thinking", Thinking: "deep reasoning", Signature: toolSigB64},
+						},
+						Content: ptr.To("visible"),
+						ToolCalls: []openai.ChatCompletionMessageToolCallParam{
+							{
+								ID:   ptr.To("id-0"),
+								Type: openai.ChatCompletionMessageToolCallTypeFunction,
+								Function: openai.ChatCompletionMessageToolCallFunctionParam{
+									Name: "fn", Arguments: `{"a":1}`,
+								},
+							},
+						},
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonToolCalls,
+				},
+			},
+		},
+		{
+			name: "no thought but text-sig plus tool-sig merges tool sig into existing block",
+			candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "answer", ThoughtSignature: []byte("text-sig")},
+							{FunctionCall: &genai.FunctionCall{Name: "fn", Args: map[string]any{"b": 2}}, ThoughtSignature: []byte("tool-sig")},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			responseMode: responseModeNone,
+			want: []openai.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Message: openai.ChatCompletionResponseChoiceMessage{
+						Role: openai.ChatMessageRoleAssistant,
+						ThinkingBlocks: []openai.ThinkingBlock{
+							{Type: "thinking", Signature: toolSigB64},
+						},
+						Content: ptr.To("answer"),
+						ToolCalls: []openai.ChatCompletionMessageToolCallParam{
+							{
+								ID:   ptr.To("id-0"),
+								Type: openai.ChatCompletionMessageToolCallTypeFunction,
+								Function: openai.ChatCompletionMessageToolCallFunctionParam{
+									Name: "fn", Arguments: `{"b":2}`,
+								},
+							},
+						},
+					},
+					FinishReason: openai.ChatCompletionChoicesFinishReasonToolCalls,
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := geminiCandidatesToOpenAIChoices(tc.candidates, tc.responseMode)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			// Tool call IDs are random UUIDs; normalize for comparison.
+			for i := range got {
+				for j := range got[i].Message.ToolCalls {
+					got[i].Message.ToolCalls[j].ID = ptr.To(fmt.Sprintf("id-%d", j))
+				}
+			}
+
+			if d := cmp.Diff(tc.want, got); d != "" {
+				t.Errorf("geminiCandidatesToOpenAIChoices() mismatch (-want +got):\n%s", d)
 			}
 		})
 	}
@@ -2729,17 +3053,17 @@ func TestMapDetailMediaResolution(t *testing.T) {
 		{
 			name:             "empty string detail",
 			detail:           openai.ChatCompletionContentPartImageImageURLDetail(""),
-			expectedErrorMsg: "unsupported detail level:",
+			expectedErrorMsg: "unsupported detail level",
 		},
 		{
 			name:             "unknown detail value",
 			detail:           openai.ChatCompletionContentPartImageImageURLDetail("unknown"),
-			expectedErrorMsg: "unsupported detail level:",
+			expectedErrorMsg: "unsupported detail level",
 		},
 		{
 			name:             "invalid detail value",
 			detail:           openai.ChatCompletionContentPartImageImageURLDetail("invalid_value"),
-			expectedErrorMsg: "unsupported detail level:",
+			expectedErrorMsg: "unsupported detail level",
 		},
 	}
 
@@ -2763,44 +3087,63 @@ func TestMapReasoningEffortToThinkingLevel(t *testing.T) {
 	tests := []struct {
 		name             string
 		reasoningEffort  openaigo.ReasoningEffort
+		model            internalapi.RequestModel
 		expectedThinking genai.ThinkingLevel
 		expectedErrorMsg string
 	}{
 		{
+			name:             "none effort on Flash maps to ThinkingLevelMinimal",
+			reasoningEffort:  "none",
+			model:            "gemini-3-flash",
+			expectedThinking: genai.ThinkingLevelMinimal,
+		},
+		{
+			name:             "none effort on Pro returns error",
+			reasoningEffort:  "none",
+			model:            "gemini-3-pro",
+			expectedErrorMsg: "reasoning effort 'none' is only supported for Gemini Flash models",
+		},
+		{
 			name:             "low effort maps to ThinkingLevelLow",
 			reasoningEffort:  openaigo.ReasoningEffortLow,
+			model:            "gemini-3-flash",
 			expectedThinking: genai.ThinkingLevelLow,
 		},
 		{
-			name:             "medium effort maps to ThinkingLevelHigh",
+			name:             "medium effort on Flash maps to ThinkingLevelMedium",
 			reasoningEffort:  openaigo.ReasoningEffortMedium,
+			model:            "gemini-3-flash",
+			expectedThinking: genai.ThinkingLevelMedium,
+		},
+		{
+			name:             "medium effort on Pro maps to ThinkingLevelHigh",
+			reasoningEffort:  openaigo.ReasoningEffortMedium,
+			model:            "gemini-3-pro",
 			expectedThinking: genai.ThinkingLevelHigh,
 		},
 		{
-			name:             "minimal effort - not supported",
-			reasoningEffort:  openaigo.ReasoningEffortMinimal,
-			expectedErrorMsg: "unsupported reasoning effort level:",
-		},
-		{
-			name:             "high effort - not supported",
+			name:             "high effort maps to ThinkingLevelHigh",
 			reasoningEffort:  openaigo.ReasoningEffortHigh,
-			expectedErrorMsg: "unsupported reasoning effort level:",
+			model:            "gemini-3-flash",
+			expectedThinking: genai.ThinkingLevelHigh,
 		},
 		{
 			name:             "empty effort - not supported",
 			reasoningEffort:  "",
-			expectedErrorMsg: "unsupported reasoning effort level:",
+			model:            "gemini-3-flash",
+			expectedErrorMsg: "unsupported reasoning effort level",
 		},
 		{
 			name:             "unknown effort - not supported",
 			reasoningEffort:  "unknown",
-			expectedErrorMsg: "unsupported reasoning effort level:",
+			model:            "gemini-3-flash",
+			expectedErrorMsg: "unsupported reasoning effort level",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			thinking, err := mapReasoningEffortToThinkingLevel(tc.reasoningEffort)
+			thinking, err := mapReasoningEffortToThinkingLevel(tc.reasoningEffort, tc.model)
 
 			if tc.expectedErrorMsg != "" {
 				require.Error(t, err)
