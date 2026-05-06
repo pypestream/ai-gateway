@@ -74,26 +74,37 @@ func resolveMaxFlattenedAttributes() int {
 	return 50
 }
 
-// flattenJSON recursively flattens a nested JSON structure into dot-notation keys.
-// For example, {"a": {"b": "c"}} becomes {"a.b": "c"}.
-// Arrays are handled by using numeric indices: {"arr": [1,2]} becomes {"arr.0": "1", "arr.1": "2"}.
+// flattenJSON flattens the top-level keys of a JSON object into individual attributes.
+// Nested objects and arrays are serialized as a single JSON string attribute rather than
+// being expanded into dot-notation keys. For example, {"a": {"b": "c"}, "x": "y"}
+// produces {"a": "{\"b\":\"c\"}", "x": "y"}.
 func flattenJSON(prefix string, data any, result map[string]string) {
 	switch v := data.(type) {
 	case map[string]any:
-		for key, value := range v {
-			newKey := key
-			if prefix != "" {
-				newKey = prefix + "." + key
+		if prefix != "" {
+			// Nested object: store as JSON string instead of flattening further.
+			if b, err := json.Marshal(v); err == nil {
+				result[prefix] = string(b)
+			} else {
+				result[prefix] = fmt.Sprintf("%v", v)
 			}
-			flattenJSON(newKey, value, result)
+			return
+		}
+		for key, value := range v {
+			flattenJSON(key, value, result)
 		}
 	case []any:
-		for i, value := range v {
-			newKey := fmt.Sprintf("%s.%d", prefix, i)
-			if prefix == "" {
-				newKey = fmt.Sprintf("%d", i)
+		if prefix != "" {
+			// Array: store as JSON string instead of expanding with numeric indices.
+			if b, err := json.Marshal(v); err == nil {
+				result[prefix] = string(b)
+			} else {
+				result[prefix] = fmt.Sprintf("%v", v)
 			}
-			flattenJSON(newKey, value, result)
+			return
+		}
+		for i, value := range v {
+			flattenJSON(fmt.Sprintf("%d", i), value, result)
 		}
 	case string:
 		result[prefix] = v
@@ -108,11 +119,11 @@ func flattenJSON(prefix string, data any, result map[string]string) {
 	}
 }
 
-// parseMetadataHeader attempts to parse the metadata header value as JSON and
-// returns flattened span attributes. If parsing fails, it falls back to storing
-// the raw string value under "metadata.raw".
-// If flattening creates more than maxFlattenedAttributes, it stores the
-// entire JSON as a single attribute to avoid hitting span attribute limits.
+// ParseMetadataHeader parses the metadata header value as JSON and returns span
+// attributes. Top-level scalar values are stored individually; nested objects and
+// arrays are stored as a single JSON string attribute. If parsing fails, falls back
+// to storing the raw string under "metadata.raw". If the number of attributes exceeds
+// maxFlattenedAttributes, stores the entire JSON as a single attribute instead.
 func ParseMetadataHeader(headerValue string) []attribute.KeyValue {
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(headerValue), &parsed); err != nil {
