@@ -177,6 +177,23 @@ func TestResolveMaxFlattenedAttributes(t *testing.T) {
 	}
 }
 
+// assertFlattenMap compares expected and actual map[string]string. Values that
+// look like JSON objects or arrays are compared semantically via require.JSONEq
+// so key ordering in the serialized JSON does not matter.
+func assertFlattenMap(t *testing.T, expected, actual map[string]string) {
+	t.Helper()
+	require.Len(t, actual, len(expected), "result map length mismatch")
+	for k, expVal := range expected {
+		actVal, ok := actual[k]
+		require.True(t, ok, "missing key %q in result", k)
+		if len(expVal) > 0 && (expVal[0] == '{' || expVal[0] == '[') {
+			require.JSONEq(t, expVal, actVal, "JSON mismatch for key %q", k)
+		} else {
+			require.Equal(t, expVal, actVal, "value mismatch for key %q", k)
+		}
+	}
+}
+
 func TestFlattenJSON(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -193,7 +210,7 @@ func TestFlattenJSON(t *testing.T) {
 			},
 		},
 		{
-			name:   "simple object",
+			name:   "simple object with scalar values",
 			prefix: "",
 			data: map[string]any{
 				"key1": "value1",
@@ -205,7 +222,7 @@ func TestFlattenJSON(t *testing.T) {
 			},
 		},
 		{
-			name:   "nested object",
+			name:   "nested object stored as single JSON string",
 			prefix: "",
 			data: map[string]any{
 				"user": map[string]any{
@@ -214,12 +231,11 @@ func TestFlattenJSON(t *testing.T) {
 				},
 			},
 			expected: map[string]string{
-				"user.id":   "123",
-				"user.name": "John",
+				"user": `{"id":"123","name":"John"}`,
 			},
 		},
 		{
-			name:   "deeply nested object",
+			name:   "deeply nested object stored as single JSON string",
 			prefix: "",
 			data: map[string]any{
 				"level1": map[string]any{
@@ -229,23 +245,21 @@ func TestFlattenJSON(t *testing.T) {
 				},
 			},
 			expected: map[string]string{
-				"level1.level2.level3": "value",
+				"level1": `{"level2":{"level3":"value"}}`,
 			},
 		},
 		{
-			name:   "array values",
+			name:   "array stored as single JSON string",
 			prefix: "",
 			data: map[string]any{
 				"items": []any{"item1", "item2", "item3"},
 			},
 			expected: map[string]string{
-				"items.0": "item1",
-				"items.1": "item2",
-				"items.2": "item3",
+				"items": `["item1","item2","item3"]`,
 			},
 		},
 		{
-			name:   "array with objects",
+			name:   "array with objects stored as single JSON string",
 			prefix: "",
 			data: map[string]any{
 				"users": []any{
@@ -254,10 +268,7 @@ func TestFlattenJSON(t *testing.T) {
 				},
 			},
 			expected: map[string]string{
-				"users.0.id":   "1",
-				"users.0.name": "Alice",
-				"users.1.id":   "2",
-				"users.1.name": "Bob",
+				"users": `[{"id":"1","name":"Alice"},{"id":"2","name":"Bob"}]`,
 			},
 		},
 		{
@@ -295,7 +306,7 @@ func TestFlattenJSON(t *testing.T) {
 			},
 		},
 		{
-			name:   "mixed types",
+			name:   "mixed types with nested object as JSON string",
 			prefix: "",
 			data: map[string]any{
 				"string": "text",
@@ -307,21 +318,21 @@ func TestFlattenJSON(t *testing.T) {
 				},
 			},
 			expected: map[string]string{
-				"string":     "text",
-				"number":     "123",
-				"bool":       "true",
-				"null":       "",
-				"nested.key": "value",
+				"string": "text",
+				"number": "123",
+				"bool":   "true",
+				"null":   "",
+				"nested": `{"key":"value"}`,
 			},
 		},
 		{
-			name:   "with prefix",
+			name:   "with non-empty prefix stores object as JSON string",
 			prefix: "prefix",
 			data: map[string]any{
 				"key": "value",
 			},
 			expected: map[string]string{
-				"prefix.key": "value",
+				"prefix": `{"key":"value"}`,
 			},
 		},
 	}
@@ -330,13 +341,36 @@ func TestFlattenJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := make(map[string]string)
 			flattenJSON(tt.prefix, tt.data, result)
-			require.Equal(t, tt.expected, result)
+			assertFlattenMap(t, tt.expected, result)
 		})
 	}
 }
 
+// assertAttributesWithJSONValues checks that result contains exactly the expected
+// attributes. For attribute values that look like JSON, it does a semantic comparison
+// so key ordering in the serialized JSON does not matter.
+func assertAttributesWithJSONValues(t *testing.T, expected, result []attribute.KeyValue) {
+	t.Helper()
+	require.Len(t, result, len(expected), "attribute count mismatch")
+	expByKey := make(map[attribute.Key]attribute.Value, len(expected))
+	for _, kv := range expected {
+		expByKey[kv.Key] = kv.Value
+	}
+	for _, kv := range result {
+		expVal, ok := expByKey[kv.Key]
+		require.True(t, ok, "unexpected attribute key %q", kv.Key)
+		actStr := kv.Value.AsString()
+		expStr := expVal.AsString()
+		if len(expStr) > 0 && (expStr[0] == '{' || expStr[0] == '[') {
+			require.JSONEq(t, expStr, actStr, "JSON mismatch for attribute %q", kv.Key)
+		} else {
+			require.Equal(t, expStr, actStr, "value mismatch for attribute %q", kv.Key)
+		}
+	}
+}
+
 func TestParseMetadataHeader(t *testing.T) {
-	// Save original values and restore after tests
+	// Save original values and restore after tests.
 	originalPrefix := metadataAttrPrefix
 	originalMaxAttrs := maxFlattenedAttrs
 	defer func() {
@@ -344,7 +378,6 @@ func TestParseMetadataHeader(t *testing.T) {
 		maxFlattenedAttrs = originalMaxAttrs
 	}()
 
-	// Set test values
 	metadataAttrPrefix = "metadata."
 	maxFlattenedAttrs = 50
 
@@ -354,7 +387,7 @@ func TestParseMetadataHeader(t *testing.T) {
 		expected    []attribute.KeyValue
 	}{
 		{
-			name:        "valid simple JSON",
+			name:        "valid simple JSON with scalar values",
 			headerValue: `{"user_id":"123","session":"abc"}`,
 			expected: []attribute.KeyValue{
 				attribute.String("metadata.user_id", "123"),
@@ -362,12 +395,11 @@ func TestParseMetadataHeader(t *testing.T) {
 			},
 		},
 		{
-			name:        "valid nested JSON",
+			name:        "valid nested JSON stores objects as single JSON string attributes",
 			headerValue: `{"user":{"id":"123","name":"John"},"session":{"id":"abc"}}`,
 			expected: []attribute.KeyValue{
-				attribute.String("metadata.user.id", "123"),
-				attribute.String("metadata.user.name", "John"),
-				attribute.String("metadata.session.id", "abc"),
+				attribute.String("metadata.user", `{"id":"123","name":"John"}`),
+				attribute.String("metadata.session", `{"id":"abc"}`),
 			},
 		},
 		{
@@ -383,7 +415,7 @@ func TestParseMetadataHeader(t *testing.T) {
 			expected:    []attribute.KeyValue{},
 		},
 		{
-			name:        "JSON with various types",
+			name:        "JSON with various scalar types",
 			headerValue: `{"string":"text","number":123,"bool":true,"null":null}`,
 			expected: []attribute.KeyValue{
 				attribute.String("metadata.string", "text"),
@@ -393,12 +425,10 @@ func TestParseMetadataHeader(t *testing.T) {
 			},
 		},
 		{
-			name:        "JSON with array",
+			name:        "JSON with array stored as single JSON string",
 			headerValue: `{"tags":["tag1","tag2","tag3"]}`,
 			expected: []attribute.KeyValue{
-				attribute.String("metadata.tags.0", "tag1"),
-				attribute.String("metadata.tags.1", "tag2"),
-				attribute.String("metadata.tags.2", "tag3"),
+				attribute.String("metadata.tags", `["tag1","tag2","tag3"]`),
 			},
 		},
 	}
@@ -406,13 +436,13 @@ func TestParseMetadataHeader(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ParseMetadataHeader(tt.headerValue)
-			require.ElementsMatch(t, tt.expected, result)
+			assertAttributesWithJSONValues(t, tt.expected, result)
 		})
 	}
 }
 
 func TestParseMetadataHeaderWithTooManyAttributes(t *testing.T) {
-	// Save original values and restore after test
+	// Save original values and restore after test.
 	originalPrefix := metadataAttrPrefix
 	originalMaxAttrs := maxFlattenedAttrs
 	defer func() {
@@ -420,19 +450,17 @@ func TestParseMetadataHeaderWithTooManyAttributes(t *testing.T) {
 		maxFlattenedAttrs = originalMaxAttrs
 	}()
 
-	// Set test values
 	metadataAttrPrefix = "metadata."
-	maxFlattenedAttrs = 5 // Set a low limit for testing
+	maxFlattenedAttrs = 5 // Set a low limit for testing.
 
-	// Create JSON with more than 5 flattened attributes
+	// Create JSON with more than 5 top-level attributes.
 	headerValue := `{"a":"1","b":"2","c":"3","d":"4","e":"5","f":"6"}`
 
 	result := ParseMetadataHeader(headerValue)
 
-	// Should have 2 attributes: the JSON string and the count
+	// Should have 2 attributes: the JSON string and the count.
 	require.Len(t, result, 2)
 
-	// Check that it contains the json attribute
 	var foundJSON, foundCount bool
 	for _, attr := range result {
 		if attr.Key == "metadata.json" {
