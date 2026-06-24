@@ -31,6 +31,7 @@ type (
 		tracer                     tracingapi.MCPTracer
 		client                     http.Client
 		logRequestHeaderAttributes map[string]string
+		maxRequestBodySize         int64 // maximum allowed POST body size in bytes
 	}
 
 	mcpProxyConfig struct {
@@ -85,6 +86,9 @@ func (m *mcpProxyConfigRoute) sameTools(other *mcpProxyConfigRoute) bool {
 		return m == other
 	}
 	if !equalKeys(m.backends, other.backends) {
+		return false
+	}
+	if !m.authorization.same(other.authorization) {
 		return false
 	}
 	return maps.EqualFunc(m.toolSelectors, other.toolSelectors, func(a, b *toolSelector) bool {
