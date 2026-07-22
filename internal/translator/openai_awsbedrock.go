@@ -138,12 +138,20 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) RequestBody(_ []byte, ope
 		bedrockReq.InferenceConfig.StopSequences = openAIReq.Stop.OfStringArray
 	}
 
-	// Handle thinking config
+	// Handle thinking config (for Anthropic models)
 	if openAIReq.Thinking != nil {
 		if bedrockReq.AdditionalModelRequestFields == nil {
 			bedrockReq.AdditionalModelRequestFields = make(map[string]interface{})
 		}
 		bedrockReq.AdditionalModelRequestFields = getAwsBedrockThinkingMap(openAIReq.Thinking)
+	}
+
+	// Forward reasoning_effort as reasoning_config (for GLM, Nova, and other models)
+	if openAIReq.ReasoningEffort != "" {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = make(map[string]interface{})
+		}
+		bedrockReq.AdditionalModelRequestFields["reasoning_config"] = string(openAIReq.ReasoningEffort)
 	}
 
 	// Convert Chat Completion messages.
@@ -737,7 +745,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 			}
 			err = serializeOpenAIChatCompletionChunk(oaiEvent, &newBody)
 			if err != nil {
-				panic(fmt.Errorf("failed to marshal event: %w", err))
+				return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to marshal streaming event: %w", err)
 			}
 			if span != nil {
 				span.RecordResponseChunk(oaiEvent)
