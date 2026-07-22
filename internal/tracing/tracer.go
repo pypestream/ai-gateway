@@ -115,15 +115,6 @@ func (t *requestTracerImpl[ReqT, RespT, ChunkT]) StartSpanAndInjectHeaders(
 		}
 	}
 
-	// Parse and attach custom metadata from headers as span attributes.
-	// Supports nested JSON structures which are flattened into dot-notation attributes.
-	if metadataValue, ok := headers[tracingapi.MetadataHeaderName]; ok {
-		metadataAttr := tracingapi.ParseMetadataHeader(metadataValue)
-		if len(metadataAttr) > 0 {
-			span.SetAttributes(metadataAttr...)
-		}
-	}
-
 	return t.newSpan(span, t.recorder)
 }
 
