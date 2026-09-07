@@ -77,6 +77,37 @@ func TestNew(t *testing.T) {
 	require.NotNil(t, s)
 }
 
+func TestParseHostPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		address  string
+		wantHost string
+		wantPort uint32
+		wantErr  string
+	}{
+		{name: "hostname without port", address: "ratelimit", wantHost: "ratelimit", wantPort: defaultQuotaRateLimitServicePort},
+		{name: "IPv6 without port", address: "2001:db8::1", wantHost: "2001:db8::1", wantPort: defaultQuotaRateLimitServicePort},
+		{name: "IPv6 with port", address: "[2001:db8::1]:9090", wantHost: "2001:db8::1", wantPort: 9090},
+		{name: "empty address", address: "", wantErr: "invalid host:port"},
+		{name: "missing IPv6 closing bracket", address: "[2001:db8::1", wantErr: "invalid host:port"},
+		{name: "multiple ports", address: "ratelimit:8080:9090", wantErr: "invalid host:port"},
+		{name: "empty host", address: ":8080", wantErr: "host must be non-empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, err := parseHostPort(tt.address)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantHost, host)
+			require.Equal(t, tt.wantPort, port)
+		})
+	}
+}
+
 func TestCheck(t *testing.T) {
 	s, err := New(newFakeClient(), logr.Discard(), udsPath, false, nil, nil, "envoy-ai-gateway-ratelimit.envoy-gateway-system", 5, false)
 	require.NoError(t, err)
@@ -211,6 +242,7 @@ func Test_maybeModifyCluster(t *testing.T) {
 										RequestAttributes: []string{
 											internalapi.XDSUpstreamHostMetadataBackendNamePath,
 											internalapi.XDSClusterMetadataBackendNamePath,
+											internalapi.XDSUpstreamHostMetadataUpstreamHostPath,
 											internalapi.XDSRouteMetadataRouteNamePath,
 										},
 										ProcessingMode: &extprocv3.ProcessingMode{
@@ -272,12 +304,20 @@ func Test_maybeModifyCluster(t *testing.T) {
 					Endpoints: []*endpointv3.LocalityLbEndpoints{
 						{
 							LbEndpoints: []*endpointv3.LbEndpoint{
-								{},
+								{HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+									Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+										SocketAddress: &corev3.SocketAddress{Address: "aaa.bedrock-runtime.us-east-1.amazonaws.com"},
+									}},
+								}}},
 							},
 						},
 						{
 							LbEndpoints: []*endpointv3.LbEndpoint{
-								{},
+								{HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+									Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+										SocketAddress: &corev3.SocketAddress{Address: "bbb.bedrock-runtime.us-east-1.amazonaws.com"},
+									}},
+								}}},
 							},
 						},
 					},
@@ -292,12 +332,20 @@ func Test_maybeModifyCluster(t *testing.T) {
 							Priority: 0,
 							LbEndpoints: []*endpointv3.LbEndpoint{
 								{
+									HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+										Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+											SocketAddress: &corev3.SocketAddress{Address: "aaa.bedrock-runtime.us-east-1.amazonaws.com"},
+										}},
+									}},
 									Metadata: &corev3.Metadata{
 										FilterMetadata: map[string]*structpb.Struct{
 											internalapi.InternalEndpointMetadataNamespace: {
 												Fields: map[string]*structpb.Value{
 													internalapi.InternalMetadataBackendNameKey: structpb.NewStringValue(
 														internalapi.PerRouteRuleRefBackendName("ns", "aaa", "myroute", 0, 0),
+													),
+													internalapi.InternalMetadataUpstreamHostKey: structpb.NewStringValue(
+														"aaa.bedrock-runtime.us-east-1.amazonaws.com",
 													),
 												},
 											},
@@ -310,12 +358,20 @@ func Test_maybeModifyCluster(t *testing.T) {
 							Priority: 1,
 							LbEndpoints: []*endpointv3.LbEndpoint{
 								{
+									HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+										Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+											SocketAddress: &corev3.SocketAddress{Address: "bbb.bedrock-runtime.us-east-1.amazonaws.com"},
+										}},
+									}},
 									Metadata: &corev3.Metadata{
 										FilterMetadata: map[string]*structpb.Struct{
 											internalapi.InternalEndpointMetadataNamespace: {
 												Fields: map[string]*structpb.Value{
 													internalapi.InternalMetadataBackendNameKey: structpb.NewStringValue(
 														internalapi.PerRouteRuleRefBackendName("ns", "bbb", "myroute", 0, 2),
+													),
+													internalapi.InternalMetadataUpstreamHostKey: structpb.NewStringValue(
+														"bbb.bedrock-runtime.us-east-1.amazonaws.com",
 													),
 												},
 											},
@@ -345,6 +401,146 @@ func Test_maybeModifyCluster(t *testing.T) {
 										RequestAttributes: []string{
 											internalapi.XDSUpstreamHostMetadataBackendNamePath,
 											internalapi.XDSClusterMetadataBackendNamePath,
+											internalapi.XDSUpstreamHostMetadataUpstreamHostPath,
+											internalapi.XDSRouteMetadataRouteNamePath,
+										},
+										ProcessingMode: &extprocv3.ProcessingMode{
+											RequestHeaderMode:  extprocv3.ProcessingMode_SEND,
+											RequestBodyMode:    extprocv3.ProcessingMode_NONE,
+											ResponseHeaderMode: extprocv3.ProcessingMode_SKIP,
+											ResponseBodyMode:   extprocv3.ProcessingMode_NONE,
+										},
+										MessageTimeout: durationpb.New(10 * time.Second),
+										GrpcService: &corev3.GrpcService{
+											TargetSpecifier: &corev3.GrpcService_EnvoyGrpc_{
+												EnvoyGrpc: &corev3.GrpcService_EnvoyGrpc{
+													ClusterName: extProcUDSClusterName,
+												},
+											},
+											Timeout: durationpb.New(30 * time.Second),
+										},
+									}),
+								},
+							},
+							{
+								Name: "envoy.filters.http.header_mutation",
+								ConfigType: &httpconnectionmanagerv3.HttpFilter_TypedConfig{
+									TypedConfig: mustToAny(t, &header_mutationv3.HeaderMutation{
+										Mutations: &header_mutationv3.Mutations{
+											RequestMutations: []*mutation_rulesv3.HeaderMutation{
+												{
+													Action: &mutation_rulesv3.HeaderMutation_Append{
+														Append: &corev3.HeaderValueOption{
+															AppendAction: corev3.HeaderValueOption_ADD_IF_ABSENT,
+															Header: &corev3.HeaderValue{
+																Key:   "content-length",
+																Value: `%DYNAMIC_METADATA(` + aigv1b1.AIGatewayFilterMetadataNamespace + `:content_length)%`,
+															},
+														},
+													},
+												},
+											},
+										},
+									}),
+								},
+							},
+							{
+								Name: "envoy.filters.http.upstream_codec",
+								ConfigType: &httpconnectionmanagerv3.HttpFilter_TypedConfig{
+									TypedConfig: mustToAny(t, &upstream_codecv3.UpstreamCodec{}),
+								},
+							},
+						},
+					}),
+				},
+			},
+		},
+		{
+			// Regression test: httpRouteRule.BackendRefs (read fresh from
+			// the AIGatewayRoute) and cluster.LoadAssignment (translated by
+			// Envoy Gateway) can be a revision apart, so LoadAssignment.
+			// Endpoints can be shorter than the rule's non-zero-weight
+			// BackendRefs. maybeModifyCluster must log and stop, not index
+			// out of range - this reproduces the "index out of range"
+			// panic the guard prevents.
+			name: "fewer LoadAssignment endpoints than non-zero-weight backendRefs logs and stops",
+			cluster: &clusterv3.Cluster{
+				Name: "httproute/ns/myroute/rule/0",
+				LoadAssignment: &endpointv3.ClusterLoadAssignment{
+					Endpoints: []*endpointv3.LocalityLbEndpoints{
+						{
+							LbEndpoints: []*endpointv3.LbEndpoint{
+								{HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+									Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+										SocketAddress: &corev3.SocketAddress{Address: "aaa.bedrock-runtime.us-east-1.amazonaws.com"},
+									}},
+								}}},
+							},
+						},
+						// Only one LocalityLbEndpoints entry, even though the rule
+						// has two non-zero-weight backendRefs ("aaa", "bbb") -
+						// "bbb" has no entry here, as when the cluster was
+						// translated from an earlier revision of the rule that
+						// had one backendRef.
+					},
+				},
+			},
+			expectedLog: "msg=\"cluster LoadAssignment has fewer endpoint groups than non-zero-weight backendRefs\" logger=envoy-gateway-extension-server cluster_name=httproute/ns/myroute/rule/0 backend_index=2 load_assignment_endpoints=1\n",
+			expected: &clusterv3.Cluster{
+				Name: "httproute/ns/myroute/rule/0",
+				LoadAssignment: &endpointv3.ClusterLoadAssignment{
+					Endpoints: []*endpointv3.LocalityLbEndpoints{
+						{
+							// "aaa" still gets its metadata stamped - only the
+							// backend(s) past the LoadAssignment's length are
+							// skipped, not the whole cluster.
+							Priority: 0,
+							LbEndpoints: []*endpointv3.LbEndpoint{
+								{
+									HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+										Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+											SocketAddress: &corev3.SocketAddress{Address: "aaa.bedrock-runtime.us-east-1.amazonaws.com"},
+										}},
+									}},
+									Metadata: &corev3.Metadata{
+										FilterMetadata: map[string]*structpb.Struct{
+											internalapi.InternalEndpointMetadataNamespace: {
+												Fields: map[string]*structpb.Value{
+													internalapi.InternalMetadataBackendNameKey: structpb.NewStringValue(
+														internalapi.PerRouteRuleRefBackendName("ns", "aaa", "myroute", 0, 0),
+													),
+													internalapi.InternalMetadataUpstreamHostKey: structpb.NewStringValue(
+														"aaa.bedrock-runtime.us-east-1.amazonaws.com",
+													),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				TypedExtensionProtocolOptions: map[string]*anypb.Any{
+					"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": mustToAny(t, &httpv3.HttpProtocolOptions{
+						UpstreamProtocolOptions: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
+							ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{},
+						}},
+						HttpFilters: []*httpconnectionmanagerv3.HttpFilter{
+							{
+								Name: aiGatewayExtProcName,
+								ConfigType: &httpconnectionmanagerv3.HttpFilter_TypedConfig{
+									TypedConfig: mustToAny(t, &extprocv3.ExternalProcessor{
+										MetadataOptions: &extprocv3.MetadataOptions{
+											ReceivingNamespaces: &extprocv3.MetadataOptions_MetadataNamespaces{
+												Untyped: []string{aigv1b1.AIGatewayFilterMetadataNamespace},
+											},
+										},
+										AllowModeOverride: true,
+										RequestAttributes: []string{
+											internalapi.XDSUpstreamHostMetadataBackendNamePath,
+											internalapi.XDSClusterMetadataBackendNamePath,
+											internalapi.XDSUpstreamHostMetadataUpstreamHostPath,
 											internalapi.XDSRouteMetadataRouteNamePath,
 										},
 										ProcessingMode: &extprocv3.ProcessingMode{
@@ -2438,5 +2634,154 @@ func TestRouteNameFromEnvoyGatewayMetadata(t *testing.T) {
 			},
 		}
 		require.Equal(t, "legacy-route", routeNameFromEnvoyGatewayMetadata(route))
+	})
+}
+
+func TestEndpointUpstreamHost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint *endpointv3.LbEndpoint
+		want     string
+	}{
+		{
+			name:     "nil endpoint",
+			endpoint: &endpointv3.LbEndpoint{},
+			want:     "",
+		},
+		{
+			name: "explicit endpoint hostname wins over socket address",
+			endpoint: &endpointv3.LbEndpoint{
+				HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+					Endpoint: &endpointv3.Endpoint{
+						Hostname: "override.example.com",
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+							SocketAddress: &corev3.SocketAddress{Address: "bedrock-runtime.us-east-1.amazonaws.com"},
+						}},
+					},
+				},
+			},
+			want: "override.example.com",
+		},
+		{
+			// Normal EG fqdn Backend: Endpoint.Hostname is empty, the FQDN is in the socket address.
+			name: "DNS socket address is used when endpoint hostname is empty",
+			endpoint: &endpointv3.LbEndpoint{
+				HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+					Endpoint: &endpointv3.Endpoint{
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+							SocketAddress: &corev3.SocketAddress{Address: "vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com"},
+						}},
+					},
+				},
+			},
+			want: "vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com",
+		},
+		{
+			name: "IPv4 socket address is rejected",
+			endpoint: &endpointv3.LbEndpoint{
+				HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+					Endpoint: &endpointv3.Endpoint{
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+							SocketAddress: &corev3.SocketAddress{Address: "10.0.0.1"},
+						}},
+					},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "IPv6 socket address is rejected",
+			endpoint: &endpointv3.LbEndpoint{
+				HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+					Endpoint: &endpointv3.Endpoint{
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+							SocketAddress: &corev3.SocketAddress{Address: "2001:db8::1"},
+						}},
+					},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "no hostname and no address",
+			endpoint: &endpointv3.LbEndpoint{
+				HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{}},
+			},
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, endpointUpstreamHost(tc.endpoint))
+		})
+	}
+}
+
+func TestStampUpstreamHostMetadata(t *testing.T) {
+	socketEndpoint := func(addr string) *endpointv3.LbEndpoint {
+		return &endpointv3.LbEndpoint{HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+			Address: &corev3.Address{Address: &corev3.Address_SocketAddress{
+				SocketAddress: &corev3.SocketAddress{Address: addr},
+			}},
+		}}}
+	}
+	upstreamHost := func(ep *endpointv3.LbEndpoint) (string, bool) {
+		m := ep.GetMetadata().GetFilterMetadata()[internalapi.InternalEndpointMetadataNamespace]
+		if m == nil {
+			return "", false
+		}
+		v, ok := m.Fields[internalapi.InternalMetadataUpstreamHostKey]
+		return v.GetStringValue(), ok
+	}
+	for _, tc := range []struct {
+		name string
+		addr string
+		want string // "" means not stamped
+	}{
+		{"public bedrock host is stamped", "bedrock-runtime.us-east-1.amazonaws.com", "bedrock-runtime.us-east-1.amazonaws.com"},
+		{"vpce host is stamped", "vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com", "vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com"},
+		{"custom vpc host is stamped", "bedrock.corp.internal", "bedrock.corp.internal"},
+		{"non-aws host is stamped too (harmless, unused by non-AWS handlers)", "api.openai.com", "api.openai.com"},
+		{"ip host is not stamped", "10.0.0.1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := socketEndpoint(tc.addr)
+			stampUpstreamHostMetadata(ep)
+			got, ok := upstreamHost(ep)
+			if tc.want == "" {
+				require.False(t, ok, "expected no upstream_host stamp")
+				return
+			}
+			require.True(t, ok)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSetEndpointMetadataUpstreamHost(t *testing.T) {
+	t.Run("initializes metadata from nil", func(t *testing.T) {
+		endpoint := &endpointv3.LbEndpoint{}
+		setEndpointMetadataUpstreamHost(endpoint, "bedrock-runtime.us-east-1.amazonaws.com")
+		m := endpoint.Metadata.FilterMetadata[internalapi.InternalEndpointMetadataNamespace]
+		require.Equal(t, "bedrock-runtime.us-east-1.amazonaws.com",
+			m.Fields[internalapi.InternalMetadataUpstreamHostKey].GetStringValue())
+	})
+
+	t.Run("preserves existing fields", func(t *testing.T) {
+		endpoint := &endpointv3.LbEndpoint{
+			Metadata: &corev3.Metadata{
+				FilterMetadata: map[string]*structpb.Struct{
+					internalapi.InternalEndpointMetadataNamespace: {
+						Fields: map[string]*structpb.Value{
+							internalapi.InternalMetadataBackendNameKey: structpb.NewStringValue("aws-bedrock"),
+						},
+					},
+				},
+			},
+		}
+		setEndpointMetadataUpstreamHost(endpoint, "vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com")
+		m := endpoint.Metadata.FilterMetadata[internalapi.InternalEndpointMetadataNamespace]
+		require.Equal(t, "aws-bedrock", m.Fields[internalapi.InternalMetadataBackendNameKey].GetStringValue())
+		require.Equal(t, "vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com",
+			m.Fields[internalapi.InternalMetadataUpstreamHostKey].GetStringValue())
 	})
 }
