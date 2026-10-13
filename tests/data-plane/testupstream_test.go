@@ -62,6 +62,8 @@ func TestWithTestUpstream(t *testing.T) {
 			testUpstreamOpenAIBackend,
 			testUpstreamModelNameOverride,
 			testUpstreamAAWSBackend,
+			testUpstreamDynMdCredBackend,
+			testUpstreamAWSDynMdCredBackend,
 			testUpstreamAzureBackend,
 			testUpstreamGCPVertexAIBackend,
 			testUpstreamGCPAnthropicAIBackend,
@@ -279,6 +281,51 @@ func TestWithTestUpstream(t *testing.T) {
 			// The static fallback has no session token, so this can only be the per-request one.
 			expRequestHeaders:         map[string]string{"X-Amz-Security-Token": fakeAWSPerRequestSessionToken},
 			nonExpectedRequestHeaders: awsCredentialOverrideHeaders,
+		},
+		{
+			// A downstream filter turns x-test-dynmd-api-key into dynamic metadata, which must
+			// reach the upstream. Only a real Envoy proves the forwarding_namespaces link.
+			name:                      "openai - per-request credential from dynamic metadata",
+			backend:                   "dynmd-cred",
+			path:                      "/v1/chat/completions",
+			method:                    http.MethodPost,
+			requestBody:               `{"model":"something","messages":[{"role":"system","content":"You are a chatbot."}]}`,
+			expPath:                   "/v1/chat/completions",
+			responseBody:              `{"choices":[{"message":{"content":"This is a test."}}]}`,
+			expStatus:                 http.StatusOK,
+			expResponseBody:           `{"choices":[{"message":{"content":"This is a test."}}]}`,
+			requestHeaders:            map[string]string{"x-test-dynmd-api-key": "metadata-sourced-key"},
+			expRequestHeaders:         map[string]string{"Authorization": "Bearer metadata-sourced-key"},
+			nonExpectedRequestHeaders: []string{"x-test-dynmd-api-key"},
+		},
+		{
+			// Without the header the namespace is empty, so the static credential is used.
+			name:              "openai - absent dynamic metadata falls back to the configured credential",
+			backend:           "dynmd-cred",
+			path:              "/v1/chat/completions",
+			method:            http.MethodPost,
+			requestBody:       `{"model":"something","messages":[{"role":"system","content":"You are a chatbot."}]}`,
+			expPath:           "/v1/chat/completions",
+			responseBody:      `{"choices":[{"message":{"content":"This is a test."}}]}`,
+			expStatus:         http.StatusOK,
+			expResponseBody:   `{"choices":[{"message":{"content":"This is a test."}}]}`,
+			expRequestHeaders: map[string]string{"Authorization": "Bearer dummy-configured-key"},
+		},
+		{
+			// The credential arrives as one struct value. The static fallback has no session
+			// token, so X-Amz-Security-Token can only come from the forwarded metadata.
+			name:              "aws-bedrock - struct credential from dynamic metadata signs the request",
+			backend:           "aws-dynmd-cred",
+			path:              "/v1/chat/completions",
+			method:            http.MethodPost,
+			requestBody:       `{"model":"something","messages":[{"role":"system","content":"You are a chatbot."}]}`,
+			expPath:           "/model/something/converse",
+			responseBody:      `{"output":{"message":{"content":[{"text":"response"},{"text":"from"},{"text":"assistant"}],"role":"assistant"}},"stopReason":null,"usage":{"inputTokens":10,"outputTokens":20,"totalTokens":30}}`,
+			expRequestBody:    `{"inferenceConfig":{},"messages":[],"system":[{"text":"You are a chatbot."}]}`,
+			expStatus:         http.StatusOK,
+			responseHeaders:   "x-amzn-requestid:2bc5b090-a26c-4007-9467-ce5adc4ffa1d",
+			expResponseBody:   `{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"response","role":"assistant"}}],"id":"2bc5b090-a26c-4007-9467-ce5adc4ffa1d","created":123,"model":"something","object":"chat.completion","usage":{"completion_tokens":20,"prompt_tokens":10,"total_tokens":30}}`,
+			expRequestHeaders: map[string]string{"X-Amz-Security-Token": fakeAWSMetadataSessionToken},
 		},
 		{
 			// Falls back to the configured credential file, which has no session token, so no
@@ -1251,6 +1298,17 @@ data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCoun
 			expResponseBody: `{"id":"resp_67cc","object":"response","created_at":1741476542,"status":"completed","model":"something","output":[{"type":"message","id":"msg_67c","status":"completed","role":"assistant","content":[{"type":"output_text","text":"This is a test."}]}],"parallel_tool_calls":true,"store":true,"temperature":1,"text":{"format":{"type":"text"}},"tool_choice":"auto","top_p":1,"truncation":"disabled","usage":{"input_tokens":16,"input_tokens_details":{"cached_tokens":5},"output_tokens":6,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":22}}`,
 		},
 		{
+			name:            "openai - /v1/decisions",
+			backend:         "openai",
+			path:            "/v1/decisions",
+			method:          http.MethodPost,
+			requestBody:     `{"model":"gpt-6-luna","input":"I was charged twice.","questions":[{"type":"choice","name":"department","instructions":"Route this request.","choices":[{"value":"billing","description":"Billing requests."},{"value":"other","description":"Other requests."}]}]}`,
+			expPath:         "/v1/decisions",
+			responseBody:    `{"answers":[{"type":"choice","name":"department","choice":"billing","probabilities":[{"value":"billing","probability":0.95},{"value":"other","probability":0.05}],"confidence":0.95}],"model":"gpt-6-luna","usage":{"input_tokens":24,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":24}}`,
+			expStatus:       http.StatusOK,
+			expResponseBody: `{"answers":[{"type":"choice","name":"department","choice":"billing","probabilities":[{"value":"billing","probability":0.95},{"value":"other","probability":0.05}],"confidence":0.95}],"model":"gpt-6-luna","usage":{"input_tokens":24,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":24}}`,
+		},
+		{
 			name:            "azure-openai - /v1/responses",
 			backend:         "azure-openai",
 			path:            "/v1/responses",
@@ -1697,7 +1755,7 @@ func TestStreamingUsageInclusionWithCosts(t *testing.T) {
 			name:           "streaming - forced to include usage",
 			backend:        "openai",
 			requestBody:    `{"model":"something","messages":[{"role":"system","content":"You are a chatbot."}], "stream": true, "stream_options": {"include_usage": false}}`,
-			expRequestBody: `{"model":"something","messages":[{"role":"system","content":"You are a chatbot."}], "stream": true, "stream_options": {"include_usage": true}}`,
+			expRequestBody: `{"model":"something","messages":[{"role":"system","content":"You are a chatbot."}], "stream": true,"stream_options":{"include_usage": true}}`,
 			responseBody: `
 {"id":"chatcmpl-foo","object":"chat.completion.chunk","created":1731618222,"model":"gpt-4o-mini-2024-07-18","system_fingerprint":"fp_0ba0d124f1","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
 {"id":"chatcmpl-foo","object":"chat.completion.chunk","created":1731618222,"model":"gpt-4o-mini-2024-07-18","system_fingerprint":"fp_0ba0d124f1","choices":[],"usage":{"prompt_tokens":13,"completion_tokens":12,"total_tokens":25,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
@@ -1733,7 +1791,7 @@ data: [DONE]
 			name:           "streaming - model override forced to include usage",
 			backend:        "modelname-override",
 			requestBody:    `{"model":"requested-model","messages":[{"role":"system","content":"You are a chatbot."}], "stream": true, "stream_options": {"include_usage": false}}`,
-			expRequestBody: `{"model":"override-model","messages":[{"role":"system","content":"You are a chatbot."}], "stream": true, "stream_options": {"include_usage": true}}`,
+			expRequestBody: `{"model":"override-model","messages":[{"role":"system","content":"You are a chatbot."}], "stream": true,"stream_options":{"include_usage": true}}`,
 			responseBody: `
 {"id":"chatcmpl-foo","object":"chat.completion.chunk","created":1731618222,"model":"gpt-4o-mini-2024-07-18","system_fingerprint":"fp_0ba0d124f1","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
 {"id":"chatcmpl-foo","object":"chat.completion.chunk","created":1731618222,"model":"gpt-4o-mini-2024-07-18","system_fingerprint":"fp_0ba0d124f1","choices":[],"usage":{"prompt_tokens":13,"completion_tokens":12,"total_tokens":25,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
