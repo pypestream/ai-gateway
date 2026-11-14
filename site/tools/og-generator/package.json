@@ -8,7 +8,7 @@
     "generate": "node generate.mjs"
   },
   "dependencies": {
-    "glob": "^11.0.0",
+    "glob": "^14.0.2",
     "gray-matter": "^4.0.3",
     "playwright-core": "^1.49.0"
   }
